@@ -1,0 +1,5 @@
+[[models]]
+model = "example-responses-model"
+protocol = "openai_responses"
+base_url = "https://api.example.com/v1"
+api_key_env = "SCOUT_LLM_API_KEY"

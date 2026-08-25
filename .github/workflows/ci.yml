@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+
+      - name: Install locked dependencies
+        run: uv sync --locked
+
+      - name: Run unit tests without resource leaks
+        run: |
+          set -o pipefail
+          uv run --locked python -W always::ResourceWarning \
+            -m unittest discover -s tests -v 2>&1 \
+            | tee "$RUNNER_TEMP/scout-unittest.log"
+          if grep -Fq "ResourceWarning" "$RUNNER_TEMP/scout-unittest.log"; then
+            echo "ResourceWarning detected in unit test output" >&2
+            exit 1
+          fi
+
+      - name: Run Ruff lint
+        run: uv run --locked ruff check .
+
+      - name: Check Ruff formatting
+        run: uv run --locked ruff format --check .
+
+      - name: Compile Python modules
+        run: uv run --locked python -m compileall -q scout tests

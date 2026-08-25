@@ -1,0 +1,14 @@
+[[sources]]
+name = "juya-ai-daily"
+url = "https://daily.juya.uk/rss.xml"
+collector = "rss"
+window_size = 7
+max_age_days = 3
+
+[network]
+timeout_seconds = 15
+max_bytes = 5242880
+user_agent = "Scout/0.1"
+
+[feishu]
+max_payload_bytes = 28672
