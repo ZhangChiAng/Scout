@@ -1,0 +1,13 @@
+[Unit]
+Description=Run Scout at Beijing fallback delivery times
+
+[Timer]
+OnCalendar=*-*-* 10:00:00 Asia/Shanghai
+OnCalendar=*-*-* 12:30:00 Asia/Shanghai
+OnCalendar=*-*-* 21:00:00 Asia/Shanghai
+Persistent=true
+Unit=scout-send.service
+
+[Install]
+WantedBy=timers.target
+

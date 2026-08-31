@@ -1,132 +1,140 @@
-# Scout 规格（V1）
+# Scout 权威规格：条目级 LLM 个性化与飞书反馈闭环
 
-本文档是侦察兵（Scout）V1 的目标形态、配置契约、数据流、消息格式与非目标
-的权威说明。实现与测试以此为准。
+本文档定义 Scout 当前目标形态。实现、运维与真实端到端验收以此为准。
 
-## 1. 定位
+## 1. 定位和边界
 
-- 个人自用的信息采集工具，当前只服务 AI 话题。
-- 动机：简体中文社区关于 DeepSeek 等 AI 话题的讨论饭圈化、情绪化，用规则
-  过滤低质样本，只保留一线开发体验、不玩梗的内容。
-- V1 只接入一个经人工策展的 RSS 信源（橘鸦AI早报）并推送飞书；未来接入
-  更多优质信源与知乎。
+Scout 是单一 owner 的个人工具，个性化是核心能力。唯一信源是橘鸦 AI 早报
+RSS；系统只使用橘鸦给出的分类、标题、人工摘要、详情和相关链接信息，不抓原文。
 
-## 2. 配置契约
+每期概览按原顺序拆成条目，LLM 只输出 `推荐 / 不推荐 / 不确定` 与简短中文
+理由。第一版发送全部条目，不过滤、不排序，也不使用虚假精确分数。
 
-### 2.1 config.toml
+非目标：多用户或群体偏好、白名单产品功能、知乎和其他信源、embedding、向量
+数据库、兴趣分、应用内调度 daemon。listener 与一次性 sender 是独立进程，调度
+由 systemd timer 完成。
 
-```toml
-[[sources]]
-name = "juya-ai-daily"
-url = "https://daily.juya.uk/rss.xml"
-collector = "rss"        # 唯一合法值，保留枚举为将来 zhihu 等扩展
-window_size = 7
-max_age_days = 3
+## 2. CLI 和配置契约
 
-[network]
-timeout_seconds = 15
-max_bytes = 5242880
-user_agent = "Scout/0.1"
+以下模式互斥：
 
-[feishu]
-max_payload_bytes = 28672
-```
+- `--send`：更新档案，发送档案变化卡和未送达个性化条目；
+- `--dry-run`：真实采集和模型调用，预览卡片，SQLite 零写入；
+- `--calibrate`：忽略整期状态，发送最新一期所有校准卡片，重复只补缺项；
+- `--listen-feedback`：阻塞运行飞书长连接并处理 `card.action.trigger`；
+- `--profile-show`、`--profile-history`：只读审阅；
+- `--profile-rollback VERSION`：复制目标版本为新的活动版本。
 
-校验规则（快速失败）：
+`--send/--dry-run` 必须有合法 `models.toml` 和 `SCOUT_LLM_API_KEY`。校准、
+listener、档案审阅与回滚不调用模型。listener 只要求飞书 App ID/Secret；发送和
+校准另要求接收者类型与 ID。
 
-- 顶层只允许 `sources`、`network`、`feishu` 三个键；旧 `[source]` 单表与
-  旧 `[filter]` 表一律拒绝。
-- 每个 `[[sources]]` 必须包含 `name`、`url`、`collector`、`window_size`，
-  可选 `max_age_days`（正整数）；未知字段拒绝。
-- `collector` 枚举目前只允许 `rss`，注册表保留扩展位。
-- `network`：`timeout_seconds` 为正数、`max_bytes` 为正整数、`user_agent`
-  非空；`feishu` 只允许 `max_payload_bytes` 且不超过 30720（飞书 30 KiB
-  富文本限制，为 OpenAPI 封装预留约 2 KiB）。
-- URL 必须是无凭据的 HTTP(S) 地址；源名大小写不敏感唯一，且是 SQLite
-  持久化身份，建立基线后不应改名。
-- 已删除字段：`transport`、`content_mode`、`allowed_hosts`、逐源 `filter`
-  与全局 `[filter]`。
+`models.toml` 恰有一个模型，字段固定为 `model`、`protocol`、`base_url`、
+`api_key_env`；协议只允许 `openai_responses`，密钥变量只允许
+`SCOUT_LLM_API_KEY`，端点 URL 不得携带凭据、query 或 fragment。
 
-### 2.2 环境变量
+Responses 请求固定 60 秒超时、关闭 SDK 重试、`store=false`。输出使用严格
+`text.format` JSON Schema；客户端检查 `status == completed`，通过
+`output_text` 读取 JSON，并在失败时处理 `incomplete_details`。不降级到自由文本。
 
-| 变量 | 必需 | 说明 |
-| --- | --- | --- |
-| `SCOUT_DB_PATH` | 否 | SQLite 路径，默认 `data/scout.sqlite3`（全新库） |
-| `SCOUT_LLM_API_KEY` | 否 | V1 不调用 LLM；仅当与 models.toml 同时存在时校验 |
-| `FEISHU_APP_ID` | `--send` | 飞书企业自建应用凭证 |
-| `FEISHU_APP_SECRET` | `--send` | 同上 |
-| `FEISHU_RECEIVE_ID_TYPE` | `--send` | chat_id/open_id/union_id/user_id/email |
-| `FEISHU_RECEIVE_ID` | `--send` | 对应的群聊或用户 ID |
+## 3. 核心类型和条目规范化
 
-### 2.3 models.toml（可选）
+`DigestArticle` 包含日报键、概览位置、编号、分类、标题、原文 URL、橘鸦摘要、
+详情、相关链接、稳定条目键和内容哈希。
 
-`models.example.toml` 结构不变，仅 `api_key_env` 固定为
-`SCOUT_LLM_API_KEY`。V1 数据流完全不调用 LLM：只有 `models.toml` 存在且
-`SCOUT_LLM_API_KEY` 已设置时才加载校验，任一缺失可正常运行，存在则严格
-校验（恰一个模型、四个固定字段、`openai_responses` 协议、无凭据端点）。
+`PersonalizedEvaluation` 包含条目键、三态结论和中文理由。
 
-## 3. 数据流
+`PreferenceProfile` 包含版本、喜欢规则、不喜欢规则、权衡项、不确定项、反馈
+证据 ID、版本变化摘要和已处理到的反馈修订 ID。
 
-```
-采集(RSSCollector) → 批内去重 → 首轮建基线不补发 → storage.unseen 持久去重
-→ max_age_days 门槛 → 解析日报(content:encoded → 概览结构) → 构建 1 条飞书
-富文本 → dry-run 打印或发送 → record_delivered → 失败按 active_failures
-一次性告警 → 退出码
-```
+条目键优先使用去除 fragment 与跟踪参数后的规范化原文 URL。无 URL 时使用
+`日报键 + 编号`；再无编号时使用 `日报键 + 位置 + 标题哈希`。内容哈希覆盖分类、
+标题、规范化 URL、摘要、详情和相关链接。
 
-保留语义：
+概览与正文按以下顺序一对一匹配：规范化 URL、编号、唯一规范化标题、相同位置。
+任何正文匹配失败都保留概览条目，只把摘要、详情和相关链接留空。
 
-- 批内去重：同一批次内相同 dedupe key 只取首个，其余计 skipped。
-- 持久去重：`unseen()` 同时比对送达记录与首次基线的 dedupe key、
-  （来源、条目 id）与（来源、URL）次级身份，URL 形态变化不重推。
-- 基线：来源未初始化时原子建立（`source_state` + `baseline_items`），不
-  补发历史；存在解析 issue 时基线推迟，直到该批无 issue。
-- 年龄门槛：`max_age_days` 在去重后生效，超龄条目跳过并聚合告警一次；
-  无超龄条目的轮次清除该活动告警。
-- 失败隔离：解析（digest）、构建（message）、发送（send）、记账（record）
-  任一失败只影响当前条目，后续条目继续；来源级失败只影响该源。
-- 一次性告警：同一 `(source, item_key)` 事件在恢复前只告警一次；送达、
-  基线建立或来源恢复采集清除活动故障。
-- 退出码：本轮有任一失败为 `1`，否则 `0`；结束打印
-  `sent/failed/baseline/skipped/previewed` 汇总。
-- dry-run：真实拉取 feed、只读数据库、不要求飞书配置、不写任何状态
-  （不建目录、不建库、不写表）。
+## 4. SQLite 增量模型
 
-已删除：跨源优先级、Jina 正文抓取、LLM 摘要与中文缓存、关键词接线、
-Semaphore 并发摘要。
+保留原有 `source_state`、`baseline_items`、`delivered_items` 和
+`active_failures`，不删库、不重放旧日报。新增：
 
-## 4. 日报解析（scout/digest.py）
+- `article_snapshots`：以日报、条目键和内容哈希保存不可变输入快照；
+- `card_deliveries`：关联快照、用途、三态评价、`message_id/chat_id`；
+- `scout_owner`：只允许 singleton=1，第一次有效反馈原子绑定 `open_id`；
+- `feedback_revisions`：每次有效修改追加不可变修订；
+- `preference_profiles`：版本、父版本、证据、活动状态、通知状态和回滚来源；
+- `evaluation_cache`：按条目键、内容哈希与档案版本缓存严格评价。
 
-输入为 RSS `content:encoded` 的完整 HTML，stdlib `HTMLParser` 解析，坏
-HTML 不抛异常只产生更少条目。输出结构：
+所有新写路径使用短事务、外键和 5 秒 busy timeout。sender 另使用非阻塞文件锁，
+防止 timer 与人工发送重叠；listener 不持有 sender 锁。
 
-```
-issue_date                       # 从 <h1>AI 早报 YYYY-MM-DD</h1> 提取
-overview: [(category, headline, url, number), ...]
-sections: [(title, url, summary, detail, related_links), ...]
-page_url                         # 参数传入的 issues URL，或"查看网页全文"链接
-```
+整期送达与条目卡片送达分开。校准忽略旧的整期状态，并按“快照 + calibration”
+判断缺项；普通发送把任意历史卡片的同条目键视为已跨期送达。只有本期所有条目
+均成功或跨期送达后，才写 `delivered_items`。远端发送成功后立即保存卡片 ID。
 
-- 概览段：`<h2>概览</h2>` 下按 `<h3>分类</h3>` 分组，
-  `<li>标题 <a>↗</a> <code>#N</code></li>` 提取标题、链接与编号。
-- 正文段：`<hr>` 后的每条新闻 `<h3>`（常含原文链接）+ `<blockquote>`
-  一句话摘要 + 首个非空 `<p>` 详情 + `<ul>` 相关链接；图片剔除。
-- V1 消息只用 overview + page_url；sections 完整解析为将来按条个性化
-  打基础。
+## 5. 偏好归纳
 
-## 5. 消息格式
+无档案时，至少需要当前有效反馈中的 2 条喜欢和 2 条不喜欢才生成 v1。已有档案
+时，仅当最大反馈修订 ID 超过档案的已处理 ID 才生成新版本。模型输入包含上一版
+档案和每张卡片的当前有效反馈；输出证据 ID 必须完整、无额外值。
 
-- 每期一条飞书富文本（post）。
-- 标题：`YYYY-MM-DD · Scout · {来源}`，日期取日报 issue_date，缺失时用
-  运行日。
-- 正文：每个概览分类一小节（分类名文本行），分类下每条为蓝色链接到外链
-  的原文标题；文末附"查看全文"链接（issues URL）。
-- 预检：编码后必须 ≤ `feishu.max_payload_bytes`（概览约 1–3 KB，天然
-  满足）；空概览视为消息构建失败。
+新版本先原子激活，再发送档案变化卡。通知失败不撤销档案，但本轮停止条目发送并
+退出失败；下次运行先重试通知。偏好归纳失败时不使用旧档案继续发送，整轮失败并
+留给下个计划点。
 
-## 6. 非目标（V1 明确不做）
+`--dry-run` 若存在待归纳反馈，只生成临时档案用于评价，不写版本、不标记反馈已
+处理，也不写评价缓存。
 
-- LLM 个性化推荐与反馈学习（仅保留 `scout/llm.py` API 入口）。
-- 知乎代码接入（仅调研文档；邀测申请是用户手工事项）。
-- 关键词过滤接线（`scout/filter.py` 保留待用）。
-- 定时调度、systemd、CI 部署（全部停用）。
+回滚读取目标旧版本的规则，创建版本号更大的活动副本；回滚时把当前最大反馈修订
+标记为已处理，避免下一次 sender 立刻根据同一批旧反馈反弹。
+
+## 6. 条目评价和发送
+
+评价输入携带当前档案，以及最近各 4 条喜欢与不喜欢的当前有效反馈。条目按概览
+顺序每批最多 8 条。结构化输出必须与请求条目完全相同、无重复、ID 对应且顺序
+一致，否则整批失败。
+
+某批评价失败只阻止该批，后续批次继续；整期不标记完成，下次只补未送达条目。
+每张卡片展示标题和原文链接、分类与编号、橘鸦摘要/详情、三态判断和个性化理由，
+不展开完整相关链接列表。不推荐和不确定条目照常发送。
+
+## 7. 飞书反馈状态机
+
+1. 新闻卡片提供“喜欢”和“不喜欢”；
+2. 点击只返回一张已选倾向的表单卡，尚不写库；
+3. 原因输入必填，服务端再次验证去空白后为 1–500 字；
+4. 提交时验证快照、用途与回调 `open_message_id`，在一个事务里绑定 owner 并追加
+   反馈修订；
+5. 回调返回“已记录”卡片与修订 ID；“修改反馈”可回到选择状态；
+6. 与当前最新反馈完全相同的重试不插入新修订，真正修改才追加。
+
+回调路径不调用 LLM。档案统一在下一次 `--send` 或定时发送前更新。listener 使用
+官方长连接事件分发；项目内兼容 `lark-oapi 1.7.2` 未分发 CARD 帧的问题。旧卡片
+所需上下文全部来自 SQLite，因此 listener 重启后仍可提交。
+
+## 8. 自动运行
+
+`scout-feedback.service` 常驻 listener，`Restart=on-failure`。
+`scout-send.service` 是执行 `--send` 的 oneshot。`scout-send.timer` 明确使用
+`Asia/Shanghai`，每天 `10:00 / 12:30 / 21:00` 触发并设置 `Persistent=true`。
+
+安装顺序：发布飞书回调 → 启动 listener → 人工 `--calibrate` 完成 2+2 反馈及
+一条修订 → 人工 `--send` 验证 v1 和变化卡 → 验证真实下一期 → 最后启用 timer。
+
+## 9. 真实端到端验收
+
+项目不编写单元测试。正式验收必须使用真实橘鸦 RSS、当前模型端点、真实 SQLite
+和真实飞书群：
+
+1. 长连接收到已发布的 `card.action.trigger`；
+2. 最新一期全部概览条目按顺序收到校准卡；
+3. 空原因不落库，完成至少 2+2 条带原因反馈，并修改一条产生新修订；
+4. `--send` 生成 v1，收到变化卡，show/history 正确；
+5. 下一期全部条目按顺序发送，三态和理由具体可理解；
+6. 新反馈在下一定时点生成 v2，回滚生成新活动版本且不立即反弹；
+7. 同库重复运行不重复，listener 重启后旧卡可提交；
+8. timer 三个时点中首个发现新日报的任务发送，后续输出无新增。
+
+飞书发送成功与 SQLite 提交仍不能跨系统原子化，崩溃窗口内可能重复一次，这是
+明确保留的限制。

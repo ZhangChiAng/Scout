@@ -1,5 +1,7 @@
 """Domain models shared across Scout components."""
 
+import hashlib
+import json
 from dataclasses import dataclass, replace
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -90,3 +92,114 @@ class ChineseSummary:
     def apply_to(self, item: NewsItem) -> NewsItem:
         content = "\n".join(f"• {bullet}" for bullet in self.bullets_zh)
         return replace(item, title=self.title_zh, content=content)
+
+
+@dataclass(frozen=True, slots=True)
+class DigestArticle:
+    """One overview entry enriched with matching Juya body content."""
+
+    digest_key: str
+    position: int
+    number: str
+    category: str
+    title: str
+    article_url: str
+    summary: str
+    detail: str
+    related_links: tuple[tuple[str, str], ...]
+    article_key: str
+    content_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class PersonalizedEvaluation:
+    """A deliberately coarse, explainable recommendation for one article."""
+
+    article_key: str
+    verdict: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        if self.verdict not in {"推荐", "不推荐", "不确定"}:
+            raise ValueError("evaluation verdict must be 推荐, 不推荐, or 不确定")
+        reason = self.reason.strip()
+        if not reason:
+            raise ValueError("evaluation reason must not be empty")
+        object.__setattr__(self, "reason", reason)
+
+
+@dataclass(frozen=True, slots=True)
+class PreferenceProfile:
+    """Versioned, evidence-backed preferences for Scout's sole owner."""
+
+    version: int
+    like_rules: tuple[str, ...]
+    dislike_rules: tuple[str, ...]
+    tradeoffs: tuple[str, ...]
+    uncertainties: tuple[str, ...]
+    evidence_ids: tuple[int, ...]
+    change_summary: str
+    last_feedback_revision_id: int = 0
+    notified: bool = False
+
+    @classmethod
+    def empty(cls) -> PreferenceProfile:
+        return cls(
+            version=0,
+            like_rules=(),
+            dislike_rules=(),
+            tradeoffs=(),
+            uncertainties=("反馈尚不足，暂时依据条目本身谨慎判断。",),
+            evidence_ids=(),
+            change_summary="尚未形成偏好档案",
+        )
+
+    def as_prompt_dict(self) -> dict[str, object]:
+        return {
+            "version": self.version,
+            "like_rules": list(self.like_rules),
+            "dislike_rules": list(self.dislike_rules),
+            "tradeoffs": list(self.tradeoffs),
+            "uncertainties": list(self.uncertainties),
+            "evidence_ids": list(self.evidence_ids),
+            "change_summary": self.change_summary,
+        }
+
+
+def make_article_key(
+    *, digest_key: str, position: int, number: str, title: str, article_url: str
+) -> str:
+    """Build the stable identity described by Scout's personalization spec."""
+
+    normalized_url = canonicalize_url(article_url) if article_url.strip() else ""
+    if normalized_url:
+        return normalized_url
+    if number.strip():
+        return f"{digest_key}#number:{number.strip()}"
+    title_hash = hashlib.sha256(title.strip().encode("utf-8")).hexdigest()[:16]
+    return f"{digest_key}#position:{position}:{title_hash}"
+
+
+def make_article_content_hash(
+    *,
+    category: str,
+    title: str,
+    article_url: str,
+    summary: str,
+    detail: str,
+    related_links: tuple[tuple[str, str], ...],
+) -> str:
+    payload = json.dumps(
+        {
+            "category": category,
+            "title": title,
+            "article_url": canonicalize_url(article_url) if article_url else "",
+            "summary": summary,
+            "detail": detail,
+            "related_links": related_links,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()

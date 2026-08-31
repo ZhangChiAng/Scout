@@ -1,90 +1,52 @@
-"""Scout single-source application orchestration."""
+"""Scout collection, personalization, card delivery, and calibration workflow."""
 
-import hashlib
-import logging
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from __future__ import annotations
+
+import asyncio
+import fcntl
+import json
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import TextIO
+from typing import IO
 
-from .collector import (
-    CollectionBatch,
-    CollectionError,
-    CollectionIssue,
-    collect_source,
-)
+from .collector import CollectionBatch, CollectionError, collect_source
 from .config import AppConfig, FeishuDeliveryConfig, SourceConfig
 from .datetime_utils import BEIJING_TIMEZONE, beijing_date, publication_date_bound
-from .digest import parse_issue
-from .model import NewsItem, canonicalize_url
+from .digest import normalize_articles, parse_issue
+from .llm import (
+    EVALUATION_BATCH_SIZE,
+    LLMError,
+    ModelConfig,
+    PersonalizationLLM,
+    resolve_api_key,
+)
+from .model import DigestArticle, NewsItem, PersonalizedEvaluation, PreferenceProfile
 from .notifier import (
     FeishuNotifier,
-    build_failure_digest,
-    build_issue_digest,
+    build_article_card,
+    build_profile_card,
 )
-from .storage import (
-    AGE_FAILURE_ITEM_KEY,
-    BASELINE_FAILURE_ITEM_KEY,
-    RECONCILE_FAILURE_ITEM_KEY,
-    SOURCE_FAILURE_ITEM_KEY,
-    STATE_FAILURE_ITEM_KEY,
-    UNSEEN_FAILURE_ITEM_KEY,
-    SQLiteStorage,
-)
-
-LOGGER = logging.getLogger(__name__)
+from .storage import SQLiteStorage
 
 
 def _now_beijing() -> datetime:
     return datetime.now(BEIJING_TIMEZONE)
 
 
-@dataclass(frozen=True, slots=True)
-class _Candidate:
-    source: SourceConfig
-    item: NewsItem
-
-
-@dataclass(frozen=True, slots=True)
-class _FailureEvent:
-    source: str
-    item_key: str
-    article_title: str
-    stage: str
+class RunLockedError(RuntimeError):
+    """Raised when another sender or calibration process owns the lock."""
 
 
 @dataclass(slots=True)
-class _RunStats:
+class RunStats:
     sent: int = 0
     previewed: int = 0
     failed: int = 0
     baseline: int = 0
     skipped: int = 0
-    failure_events: set[tuple[str, str]] = field(default_factory=set)
-
-
-@dataclass(slots=True)
-class _LazyNotifier:
-    factory: Callable[..., object]
-    delivery: FeishuDeliveryConfig
-    timeout_seconds: float
-    instance: object | None = None
-    initialization_error: Exception | None = None
-    attempted: bool = False
-
-    def send(self, digest: object) -> None:
-        if not self.attempted:
-            self.attempted = True
-            try:
-                self.instance = self.factory(self.delivery, self.timeout_seconds)
-            except Exception as exc:  # noqa: BLE001 - isolate notifier boundary
-                self.initialization_error = exc
-        if self.initialization_error is not None:
-            raise self.initialization_error
-        if self.instance is None:  # pragma: no cover - defensive invariant
-            raise RuntimeError("notifier initialization returned no instance")
-        self.instance.send(digest)  # type: ignore[attr-defined]
 
 
 def run(
@@ -92,373 +54,461 @@ def run(
     *,
     mode: str,
     database_path: str | Path,
-    output: TextIO,
+    output: IO[str],
     feishu_delivery: FeishuDeliveryConfig | None = None,
+    model_config: ModelConfig | None = None,
     collector_factory: Callable[..., object] | None = None,
     notifier_factory: Callable[..., object] = FeishuNotifier,
     clock: Callable[[], datetime] = _now_beijing,
 ) -> int:
-    """Run one collection round.
-
-    Collection, baseline establishment, and delivery follow configuration
-    order.  Every delivered issue is persisted independently, failures are
-    isolated per event with a one-shot alert, and the exit code is 1 when
-    anything failed.
-    """
-
-    if mode not in {"dry-run", "send"}:
+    if mode not in {"send", "dry-run", "calibrate"}:
         raise ValueError(f"unsupported mode: {mode}")
-    if mode == "send" and feishu_delivery is None:
-        raise ValueError("Feishu delivery configuration is required in --send mode")
+    if mode in {"send", "calibrate"} and feishu_delivery is None:
+        raise ValueError(f"Feishu delivery configuration is required in --{mode} mode")
+    if mode in {"send", "dry-run"} and model_config is None:
+        raise ValueError(f"model configuration is required in --{mode} mode")
 
-    run_date = beijing_date(clock())
-    storage = SQLiteStorage(database_path)
-    notifier = None
-    if mode == "send":
-        # Construction is lazy: a baseline-only run neither needs nor touches
-        # Feishu, while a broken client is isolated like any other send failure.
-        assert feishu_delivery is not None
-        notifier = _LazyNotifier(
-            notifier_factory, feishu_delivery, config.network.timeout_seconds
+    lock_context = (
+        _sender_lock(database_path) if mode in {"send", "calibrate"} else _null_lock()
+    )
+    with lock_context:
+        return asyncio.run(
+            _run(
+                config,
+                mode=mode,
+                database_path=database_path,
+                output=output,
+                feishu_delivery=feishu_delivery,
+                model_config=model_config,
+                collector_factory=collector_factory,
+                notifier_factory=notifier_factory,
+                clock=clock,
+            )
         )
-    stats = _RunStats()
-    candidates: list[_Candidate] = []
 
-    for source in config.sources:
+
+async def _run(
+    config: AppConfig,
+    *,
+    mode: str,
+    database_path: str | Path,
+    output: IO[str],
+    feishu_delivery: FeishuDeliveryConfig | None,
+    model_config: ModelConfig | None,
+    collector_factory: Callable[..., object] | None,
+    notifier_factory: Callable[..., object],
+    clock: Callable[[], datetime],
+) -> int:
+    storage = SQLiteStorage(database_path)
+    stats = RunStats()
+    run_date = beijing_date(clock())
+    read_only = mode == "dry-run"
+    if not read_only:
+        storage.initialize()
+
+    notifier = None
+    if feishu_delivery is not None:
+        notifier = notifier_factory(feishu_delivery, config.network.timeout_seconds)
+
+    llm = None
+    profile = PreferenceProfile.empty()
+    if model_config is not None:
+        llm = PersonalizationLLM(model_config, resolve_api_key(model_config))
         try:
-            batch = _collect(source, config, collector_factory)
-        except Exception as exc:  # noqa: BLE001 - isolate one source collector
-            LOGGER.warning("source collection failed: %s: %s", source.name, exc)
-            _report_failure(
-                _FailureEvent(
-                    source.name,
-                    SOURCE_FAILURE_ITEM_KEY,
-                    "（来源采集）",
-                    "collection",
-                ),
-                mode=mode,
-                notifier=notifier,
-                storage=storage,
-                config=config,
-                run_date=run_date,
-                output=output,
-                stats=stats,
-            )
-            continue
+            profile = await _prepare_profile(storage, llm, mode=mode, output=output)
+        except Exception:
+            await llm.close()
+            raise
 
-        issue_events = tuple(_issue_event(source, issue) for issue in batch.issues)
-        if mode == "send":
-            # A successful source-level collection is the recovery boundary for
-            # the source event.  Article events remain active until delivery.
+    try:
+        if mode == "send" and profile.version > 0 and not profile.notified:
+            assert notifier is not None
             try:
-                storage.clear_active_failure(source.name, SOURCE_FAILURE_ITEM_KEY)
-                storage.reconcile_active_failure_namespace(
-                    source.name,
-                    "collection:",
-                    {
-                        event.item_key
-                        for event in issue_events
-                        if event.item_key.startswith("collection:")
-                    },
+                card = build_profile_card(
+                    profile, max_payload_bytes=config.feishu.max_payload_bytes
                 )
-                storage.clear_active_failure(source.name, RECONCILE_FAILURE_ITEM_KEY)
-            except Exception:  # noqa: BLE001 - isolate state reconciliation
-                _report_failure(
-                    _FailureEvent(
-                        source.name,
-                        RECONCILE_FAILURE_ITEM_KEY,
-                        "（来源状态）",
-                        "state",
-                    ),
-                    mode=mode,
-                    notifier=notifier,
-                    storage=storage,
-                    config=config,
-                    run_date=run_date,
-                    output=output,
-                    stats=stats,
+                sent = notifier.send_card(card)  # type: ignore[attr-defined]
+                storage.mark_profile_notified(
+                    profile.version,
+                    message_id=sent.message_id,
+                    chat_id=sent.chat_id,
                 )
-
-        for event in issue_events:
-            _report_failure(
-                event,
-                mode=mode,
-                notifier=notifier,
-                storage=storage,
-                config=config,
-                run_date=run_date,
-                output=output,
-                stats=stats,
-            )
-
-        source_items = _unique_source_items(batch.items, stats)
-        try:
-            initialized = storage.is_source_initialized(
-                source.name, read_only=(mode == "dry-run")
-            )
-        except Exception:  # noqa: BLE001 - isolate one source state lookup
-            _report_failure(
-                _FailureEvent(
-                    source.name,
-                    STATE_FAILURE_ITEM_KEY,
-                    "（来源状态）",
-                    "state",
-                ),
-                mode=mode,
-                notifier=notifier,
-                storage=storage,
-                config=config,
-                run_date=run_date,
-                output=output,
-                stats=stats,
-            )
-            continue
-        if mode == "send":
-            try:
-                storage.clear_active_failure(source.name, STATE_FAILURE_ITEM_KEY)
-            except Exception:  # noqa: BLE001 - isolate recovery accounting
-                _report_failure(
-                    _FailureEvent(
-                        source.name,
-                        STATE_FAILURE_ITEM_KEY,
-                        "（来源状态）",
-                        "state",
-                    ),
-                    mode=mode,
-                    notifier=notifier,
-                    storage=storage,
-                    config=config,
-                    run_date=run_date,
-                    output=output,
-                    stats=stats,
-                )
-        if not initialized:
-            if batch.issues:
+                profile = storage.active_profile(read_only=True) or profile
                 print(
-                    f"Baseline deferred: {source.name}: "
-                    f"{len(batch.issues)} collection issue(s)",
+                    f"Preference profile v{profile.version} notification sent.",
+                    file=output,
+                )
+            except Exception as exc:  # noqa: BLE001 - isolate notification boundary
+                stats.failed += 1
+                print(
+                    f"Profile notification failed: {type(exc).__name__}; "
+                    "article delivery is deferred.",
+                    file=output,
+                )
+                _print_summary(stats, output)
+                return 1
+
+        for source in config.sources:
+            try:
+                batch = _collect(source, config, collector_factory)
+            except Exception as exc:  # noqa: BLE001 - isolate source collection
+                stats.failed += 1
+                print(
+                    f"Collection failed: {source.name}: {type(exc).__name__}",
                     file=output,
                 )
                 continue
-            if mode == "dry-run":
-                stats.baseline += len(source_items)
-                _print_baseline_preview(source, source_items, output, dry_run=True)
-                continue
-            try:
-                created = storage.initialize_source_baseline(source.name, source_items)
-            except Exception:  # noqa: BLE001 - isolate baseline transaction
-                _report_failure(
-                    _FailureEvent(
-                        source.name,
-                        BASELINE_FAILURE_ITEM_KEY,
-                        "（首次基线）",
-                        "baseline",
-                    ),
+            if batch.issues:
+                stats.failed += len(batch.issues)
+                print(
+                    f"Collection warnings: {source.name}: {len(batch.issues)}",
+                    file=output,
+                )
+            items = _unique_items(batch.items, stats)
+            if mode == "calibrate":
+                if not items:
+                    stats.failed += 1
+                    print(f"Calibration found no issue: {source.name}", file=output)
+                    continue
+                if not storage.is_source_initialized(source.name):
+                    storage.initialize_source_baseline(source.name, items)
+                # Calibration intentionally targets only the newest issue.
+                # Seal the older RSS window so the following personalized
+                # send cannot replay historical daily issues.  A later
+                # explicit calibration can still ignore this whole-issue
+                # state and send its own snapshot cards.
+                storage.record_delivered(items[1:])
+                await _process_issue(
+                    source,
+                    items[0],
                     mode=mode,
-                    notifier=notifier,
                     storage=storage,
+                    notifier=notifier,
+                    llm=None,
+                    profile=profile,
                     config=config,
-                    run_date=run_date,
                     output=output,
                     stats=stats,
                 )
-                continue
-            try:
-                storage.clear_active_failure(source.name, BASELINE_FAILURE_ITEM_KEY)
-            except Exception:  # noqa: BLE001 - isolate recovery accounting
-                _report_failure(
-                    _FailureEvent(
-                        source.name,
-                        BASELINE_FAILURE_ITEM_KEY,
-                        "（首次基线）",
-                        "baseline",
-                    ),
-                    mode=mode,
-                    notifier=notifier,
-                    storage=storage,
-                    config=config,
-                    run_date=run_date,
-                    output=output,
-                    stats=stats,
-                )
-            if created:
-                stats.baseline += len(source_items)
-                _print_baseline_preview(source, source_items, output, dry_run=False)
                 continue
 
-        try:
-            unseen = storage.unseen(source_items, read_only=(mode == "dry-run"))
-        except Exception:  # noqa: BLE001 - isolate one source state query
-            _report_failure(
-                _FailureEvent(
-                    source.name,
-                    UNSEEN_FAILURE_ITEM_KEY,
-                    "（来源状态）",
-                    "state",
-                ),
-                mode=mode,
-                notifier=notifier,
-                storage=storage,
-                config=config,
-                run_date=run_date,
-                output=output,
-                stats=stats,
+            initialized = storage.is_source_initialized(
+                source.name, read_only=read_only
             )
-            continue
-        if mode == "send":
+            if not initialized:
+                stats.baseline += len(items)
+                label = "Baseline preview" if read_only else "Baseline created"
+                print(f"{label}: {source.name}: {len(items)} issue(s)", file=output)
+                if read_only:
+                    for item in items:
+                        print(
+                            f"  - {item.published_at or '日期未知'} · {item.title}",
+                            file=output,
+                        )
+                elif not batch.issues:
+                    storage.initialize_source_baseline(source.name, items)
+                continue
+
             try:
-                storage.clear_active_failure(source.name, UNSEEN_FAILURE_ITEM_KEY)
-            except Exception:  # noqa: BLE001 - isolate recovery accounting
-                _report_failure(
-                    _FailureEvent(
-                        source.name,
-                        UNSEEN_FAILURE_ITEM_KEY,
-                        "（来源状态）",
-                        "state",
-                    ),
-                    mode=mode,
-                    notifier=notifier,
-                    storage=storage,
-                    config=config,
-                    run_date=run_date,
-                    output=output,
-                    stats=stats,
+                unseen = storage.unseen(items, read_only=read_only)
+            except Exception as exc:  # noqa: BLE001 - isolate source state
+                stats.failed += 1
+                print(
+                    f"State lookup failed: {source.name}: {type(exc).__name__}",
+                    file=output,
                 )
-        stats.skipped += len(source_items) - len(unseen)
-        selected = unseen
-        if source.max_age_days is not None:
-            fresh, stale = _partition_by_age(
-                selected, run_date=run_date, max_age_days=source.max_age_days
-            )
-            if stale:
+                continue
+            stats.skipped += len(items) - len(unseen)
+            selected = unseen
+            if source.max_age_days is not None:
+                selected, stale = _partition_by_age(
+                    selected,
+                    run_date=run_date,
+                    max_age_days=source.max_age_days,
+                )
                 stats.skipped += len(stale)
-                _report_failure(
-                    _FailureEvent(
-                        source.name,
-                        AGE_FAILURE_ITEM_KEY,
-                        _age_alert_title(stale, source.max_age_days),
-                        "age",
-                    ),
+                if stale:
+                    print(
+                        f"Skipped {len(stale)} issue(s) older than "
+                        f"{source.max_age_days} days.",
+                        file=output,
+                    )
+            for item in selected:
+                await _process_issue(
+                    source,
+                    item,
                     mode=mode,
-                    notifier=notifier,
                     storage=storage,
+                    notifier=notifier,
+                    llm=llm,
+                    profile=profile,
                     config=config,
-                    run_date=run_date,
                     output=output,
                     stats=stats,
                 )
-                selected = fresh
-            elif mode == "send":
-                # A round with no stale articles is the recovery boundary for
-                # the aggregated age alert.
-                try:
-                    storage.clear_active_failure(source.name, AGE_FAILURE_ITEM_KEY)
-                except Exception:  # noqa: BLE001 - isolate recovery accounting
-                    _report_failure(
-                        _FailureEvent(
-                            source.name,
-                            AGE_FAILURE_ITEM_KEY,
-                            "（超龄恢复状态）",
-                            "state",
-                        ),
-                        mode=mode,
-                        notifier=notifier,
-                        storage=storage,
-                        config=config,
-                        run_date=run_date,
-                        output=output,
-                        stats=stats,
-                    )
-        candidates.extend(_Candidate(source, item) for item in selected)
+    finally:
+        if llm is not None:
+            await llm.close()
 
-    for candidate in candidates:
+    if not any((stats.sent, stats.previewed, stats.failed, stats.baseline)):
+        print("No new items.", file=output)
+    _print_summary(stats, output)
+    return 1 if stats.failed else 0
+
+
+async def _prepare_profile(
+    storage: SQLiteStorage,
+    llm: PersonalizationLLM,
+    *,
+    mode: str,
+    output: IO[str],
+) -> PreferenceProfile:
+    read_only = mode == "dry-run"
+    active = storage.active_profile(read_only=read_only)
+    evidence = storage.feedback_evidence(read_only=read_only)
+    latest_revision = storage.max_feedback_revision_id(read_only=read_only)
+    likes = sum(item.sentiment == "like" for item in evidence)
+    dislikes = sum(item.sentiment == "dislike" for item in evidence)
+    if active is None:
+        update_needed = likes >= 2 and dislikes >= 2
+    else:
+        update_needed = latest_revision > active.last_feedback_revision_id
+    if not update_needed:
+        return active or PreferenceProfile.empty()
+
+    next_version = (active.version if active else 0) + 1
+    try:
+        generated = await llm.summarize_preferences(
+            evidence,
+            active,
+            next_version=next_version,
+            last_feedback_revision_id=latest_revision,
+        )
+    except Exception as exc:
+        raise LLMError(
+            "preference update failed; the previous profile will not be used "
+            f"for this round ({type(exc).__name__})"
+        ) from exc
+    if read_only:
+        print(
+            f"Temporary preference profile v{generated.version} generated "
+            "for dry-run; SQLite unchanged.",
+            file=output,
+        )
+        return generated
+    saved = storage.save_profile(generated)
+    print(f"Preference profile v{saved.version} activated.", file=output)
+    return saved
+
+
+async def _process_issue(
+    source: SourceConfig,
+    item: NewsItem,
+    *,
+    mode: str,
+    storage: SQLiteStorage,
+    notifier: object | None,
+    llm: PersonalizationLLM | None,
+    profile: PreferenceProfile,
+    config: AppConfig,
+    output: IO[str],
+    stats: RunStats,
+) -> None:
+    try:
+        issue = parse_issue(item.content, page_url=item.url)
+        articles = normalize_articles(issue, digest_key=item.dedupe_key)
+        if not articles:
+            raise ValueError("issue overview contains no entries")
+    except Exception as exc:  # noqa: BLE001 - isolate malformed issue
+        stats.failed += 1
+        print(
+            f"Digest parsing failed: {source.name}: {item.title}: {type(exc).__name__}",
+            file=output,
+        )
+        return
+
+    if mode == "dry-run":
+        snapshots = {
+            (article.article_key, article.content_hash): 0 for article in articles
+        }
+    else:
         try:
-            issue = parse_issue(candidate.item.content, page_url=candidate.item.url)
-        except Exception:  # noqa: BLE001 - isolate one digest parse
-            _report_item_failure(
-                candidate,
-                "digest",
-                mode=mode,
-                notifier=notifier,
-                storage=storage,
-                config=config,
-                run_date=run_date,
-                output=output,
-                stats=stats,
+            snapshots = storage.save_article_snapshots(articles)
+        except Exception as exc:  # noqa: BLE001 - isolate snapshot transaction
+            stats.failed += 1
+            print(
+                f"Snapshot write failed: {item.title}: {type(exc).__name__}",
+                file=output,
+            )
+            return
+
+    if mode == "calibrate":
+        await _deliver_calibration(
+            item,
+            articles,
+            snapshots=snapshots,
+            storage=storage,
+            notifier=notifier,
+            config=config,
+            output=output,
+            stats=stats,
+        )
+        return
+
+    pending = [
+        article
+        for article in articles
+        if not storage.is_article_delivered(
+            article.article_key, read_only=mode == "dry-run"
+        )
+    ]
+    stats.skipped += len(articles) - len(pending)
+    assert llm is not None
+    recent_likes = storage.recent_feedback("like", read_only=mode == "dry-run")
+    recent_dislikes = storage.recent_feedback("dislike", read_only=mode == "dry-run")
+    for start in range(0, len(pending), EVALUATION_BATCH_SIZE):
+        batch = pending[start : start + EVALUATION_BATCH_SIZE]
+        evaluations: dict[str, PersonalizedEvaluation] = {}
+        missing: list[DigestArticle] = []
+        for article in batch:
+            cached = storage.cached_evaluation(
+                article, profile.version, read_only=mode == "dry-run"
+            )
+            if cached is None:
+                missing.append(article)
+            else:
+                evaluations[article.article_key] = cached
+        try:
+            if missing:
+                generated = await llm.evaluate_articles(
+                    missing, profile, recent_likes, recent_dislikes
+                )
+                evaluations.update(
+                    (evaluation.article_key, evaluation) for evaluation in generated
+                )
+                if mode == "send":
+                    storage.save_evaluations(
+                        missing, generated, profile_version=profile.version
+                    )
+        except Exception as exc:  # noqa: BLE001 - isolate one model batch
+            stats.failed += len(batch)
+            print(
+                f"Evaluation batch failed: {item.title}: positions "
+                f"{batch[0].position}-{batch[-1].position}: {type(exc).__name__}",
+                file=output,
             )
             continue
+        for article in batch:
+            evaluation = evaluations[article.article_key]
+            snapshot_id = snapshots[(article.article_key, article.content_hash)]
+            try:
+                card = build_article_card(
+                    article,
+                    evaluation,
+                    snapshot_id=snapshot_id,
+                    purpose="personalized",
+                    max_payload_bytes=config.feishu.max_payload_bytes,
+                )
+                if mode == "dry-run":
+                    print(
+                        json.dumps(card, ensure_ascii=False, separators=(",", ":")),
+                        file=output,
+                    )
+                    stats.previewed += 1
+                    continue
+                assert notifier is not None
+                sent = notifier.send_card(card)  # type: ignore[attr-defined]
+                storage.record_card_delivery(
+                    snapshot_id=snapshot_id,
+                    article_key=article.article_key,
+                    purpose="personalized",
+                    message_id=sent.message_id,
+                    chat_id=sent.chat_id,
+                    evaluation=evaluation,
+                )
+                stats.sent += 1
+            except Exception as exc:  # noqa: BLE001 - isolate one card delivery
+                stats.failed += 1
+                print(
+                    f"Card delivery failed: {item.title} #{article.position}: "
+                    f"{type(exc).__name__}",
+                    file=output,
+                )
+
+    if mode == "send" and storage.all_articles_delivered(
+        article.article_key for article in articles
+    ):
         try:
-            issue_date = issue.issue_date or run_date
-            digest = build_issue_digest(
-                issue,
-                items=(candidate.item,),
-                title=f"{issue_date} · Scout · {candidate.source.name}",
+            storage.record_delivered([item])
+        except Exception as exc:  # noqa: BLE001 - isolate completion accounting
+            stats.failed += 1
+            print(
+                f"Issue completion write failed: {item.title}: {type(exc).__name__}",
+                file=output,
+            )
+
+
+async def _deliver_calibration(
+    item: NewsItem,
+    articles: Sequence[DigestArticle],
+    *,
+    snapshots: dict[tuple[str, str], int],
+    storage: SQLiteStorage,
+    notifier: object | None,
+    config: AppConfig,
+    output: IO[str],
+    stats: RunStats,
+) -> None:
+    for article in articles:
+        snapshot_id = snapshots[(article.article_key, article.content_hash)]
+        if storage.is_snapshot_delivered(snapshot_id, "calibration"):
+            stats.skipped += 1
+            continue
+        evaluation = PersonalizedEvaluation(
+            article.article_key,
+            "不确定",
+            "校准阶段暂不调用模型；请用喜欢或不喜欢及具体原因帮助建立偏好档案。",
+        )
+        try:
+            card = build_article_card(
+                article,
+                evaluation,
+                snapshot_id=snapshot_id,
+                purpose="calibration",
                 max_payload_bytes=config.feishu.max_payload_bytes,
             )
-        except Exception:  # noqa: BLE001 - isolate message construction
-            _report_item_failure(
-                candidate,
-                "message",
-                mode=mode,
-                notifier=notifier,
-                storage=storage,
-                config=config,
-                run_date=run_date,
-                output=output,
-                stats=stats,
+            assert notifier is not None
+            sent = notifier.send_card(card)  # type: ignore[attr-defined]
+            storage.record_card_delivery(
+                snapshot_id=snapshot_id,
+                article_key=article.article_key,
+                purpose="calibration",
+                message_id=sent.message_id,
+                chat_id=sent.chat_id,
+                evaluation=evaluation,
             )
-            continue
-
-        if mode == "dry-run":
-            print(digest.encoded.decode("utf-8"), file=output)
-            stats.previewed += 1
-            continue
-
+            stats.sent += 1
+        except Exception as exc:  # noqa: BLE001 - isolate one calibration card
+            stats.failed += 1
+            print(
+                f"Calibration card failed: {item.title} #{article.position}: "
+                f"{type(exc).__name__}",
+                file=output,
+            )
+    if all(
+        storage.is_snapshot_delivered(
+            snapshots[(article.article_key, article.content_hash)], "calibration"
+        )
+        for article in articles
+    ):
         try:
-            notifier.send(digest)  # type: ignore[union-attr]
-        except Exception:  # noqa: BLE001 - isolate remote delivery
-            _report_item_failure(
-                candidate,
-                "send",
-                mode=mode,
-                notifier=notifier,
-                storage=storage,
-                config=config,
-                run_date=run_date,
-                output=output,
-                stats=stats,
+            storage.record_delivered([item])
+        except Exception as exc:  # noqa: BLE001 - isolate completion accounting
+            stats.failed += 1
+            print(
+                f"Calibration completion write failed: {type(exc).__name__}",
+                file=output,
             )
-            continue
-
-        stats.sent += 1
-        try:
-            storage.record_delivered([candidate.item])
-        except Exception:  # noqa: BLE001 - isolate delivery accounting
-            # The remote delivery succeeded, but without durable accounting the
-            # round must still fail.  A compact alert is attempted just like any
-            # other article failure; it is deliberately not retried recursively.
-            _report_item_failure(
-                candidate,
-                "record",
-                mode=mode,
-                notifier=notifier,
-                storage=storage,
-                config=config,
-                run_date=run_date,
-                output=output,
-                stats=stats,
-            )
-            continue
-
-    if not candidates and not stats.failed and not stats.baseline:
-        print("No new items.", file=output)
-    print(
-        "Summary: "
-        f"sent={stats.sent} failed={stats.failed} baseline={stats.baseline} "
-        f"skipped={stats.skipped} previewed={stats.previewed}",
-        file=output,
-    )
-    return 1 if stats.failed else 0
 
 
 def _collect(
@@ -485,12 +535,10 @@ def _collect(
         raise CollectionError("collector returned a non-NewsItem entry")
     if any(item.source != source.name for item in batch.items):
         raise CollectionError("collector returned an entry for the wrong source")
-    if any(not isinstance(issue, CollectionIssue) for issue in batch.issues):
-        raise CollectionError("collector returned an invalid CollectionIssue")
     return batch
 
 
-def _unique_source_items(items: Sequence[NewsItem], stats: _RunStats) -> list[NewsItem]:
+def _unique_items(items: Sequence[NewsItem], stats: RunStats) -> list[NewsItem]:
     result: list[NewsItem] = []
     seen: set[str] = set()
     for item in items:
@@ -505,133 +553,40 @@ def _unique_source_items(items: Sequence[NewsItem], stats: _RunStats) -> list[Ne
 def _partition_by_age(
     items: Sequence[NewsItem], *, run_date: str, max_age_days: int
 ) -> tuple[list[NewsItem], list[NewsItem]]:
-    """Split candidates into fresh items and ones published too long ago.
-
-    Age uses the latest possible Beijing publication day for the item's
-    precision; month-only dates expire with their whole month and unparseable
-    dates stay fresh rather than dropping legitimate coverage.
-    """
-
     cutoff = date.fromisoformat(run_date) - timedelta(days=max_age_days)
     fresh: list[NewsItem] = []
     stale: list[NewsItem] = []
     for item in items:
         bound = publication_date_bound(item.published_at)
-        if bound is not None and bound < cutoff:
-            stale.append(item)
-        else:
-            fresh.append(item)
+        (stale if bound is not None and bound < cutoff else fresh).append(item)
     return fresh, stale
 
 
-def _age_alert_title(stale: Sequence[NewsItem], max_age_days: int) -> str:
-    oldest = min(
-        (publication_date_bound(item.published_at) for item in stale),
-        key=lambda bound: bound or date.max,
-    )
-    oldest_label = oldest.isoformat() if oldest is not None else "日期未知"
-    sample = stale[0].title
-    return (
-        f"{len(stale)} 篇超过 {max_age_days} 天的文章已跳过"
-        f"（最老 {oldest_label}，如：{sample[:80]}）"
-    )
-
-
-def _print_baseline_preview(
-    source: SourceConfig,
-    items: Sequence[NewsItem],
-    output: TextIO,
-    *,
-    dry_run: bool,
-) -> None:
-    label = "Baseline preview" if dry_run else "Baseline created"
-    print(f"{label}: {source.name}: {len(items)} item(s)", file=output)
-    if dry_run:
-        for item in items:
-            date = item.published_at or "日期未知"
-            print(f"  - {date} · {item.title}", file=output)
-
-
-def _report_item_failure(
-    candidate: _Candidate,
-    stage: str,
-    **kwargs: object,
-) -> None:
-    _report_failure(
-        _FailureEvent(
-            candidate.source.name,
-            candidate.item.dedupe_key,
-            candidate.item.title,
-            stage,
-        ),
-        **kwargs,  # type: ignore[arg-type]
-    )
-
-
-def _issue_event(source: SourceConfig, issue: CollectionIssue) -> _FailureEvent:
-    title = issue.title or f"（列表条目 {issue.index or '?'}）"
-    issue_url = canonicalize_url(issue.url) if issue.url else ""
-    if issue_url and issue_url != canonicalize_url(source.url):
-        # A recognizable article keeps one identity while it moves from parse
-        # to digest, message, or delivery failure.
-        item_key = issue_url
-    else:
-        stable_label = " ".join(issue.title.split()).casefold()
-        if not stable_label:
-            stable_label = f"index:{issue.index or '?'}"
-        identity = f"{source.name}\0{canonicalize_url(source.url)}\0{stable_label}"
-        item_key = "collection:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
-    return _FailureEvent(
-        source.name,
-        item_key,
-        title,
-        issue.stage or "collection",
-    )
-
-
-def _report_failure(
-    event: _FailureEvent,
-    *,
-    mode: str,
-    notifier: object | None,
-    storage: SQLiteStorage,
-    config: AppConfig,
-    run_date: str,
-    output: TextIO,
-    stats: _RunStats,
-) -> None:
-    identity = (event.source, event.item_key)
-    if identity in stats.failure_events:
-        return
-    stats.failure_events.add(identity)
-    stats.failed += 1
+def _print_summary(stats: RunStats, output: IO[str]) -> None:
     print(
-        f"Failure: source={event.source} article={event.article_title} "
-        f"stage={event.stage}",
+        "Summary: "
+        f"sent={stats.sent} failed={stats.failed} baseline={stats.baseline} "
+        f"skipped={stats.skipped} previewed={stats.previewed}",
         file=output,
     )
-    if mode != "send" or notifier is None:
-        return
-    try:
-        already_active = storage.has_active_failure(event.source, event.item_key)
-    except Exception:  # noqa: BLE001 - alert state must not abort the round
-        already_active = False
-    if already_active:
-        return
-    try:
-        digest = build_failure_digest(
-            title=f"{run_date} · Scout · 告警",
-            source=event.source,
-            article_title=event.article_title,
-            stage=event.stage,
-            max_payload_bytes=config.feishu.max_payload_bytes,
-        )
-        notifier.send(digest)  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001 - alerts are best effort
-        return
-    try:
-        storage.record_active_failure(event.source, event.item_key)
-    except Exception:  # noqa: BLE001 - alert accounting is best effort
-        # The alert was delivered but cannot be durably deduplicated.  Retrying
-        # next run is safer than aborting unrelated items.
-        return
+
+
+@contextmanager
+def _sender_lock(database_path: str | Path) -> Iterator[None]:
+    path = Path(database_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(f"{path.name}.sender.lock")
+    with lock_path.open("a+b") as file:
+        try:
+            fcntl.flock(file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RunLockedError("another Scout sender is already running") from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(file.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def _null_lock() -> Iterator[None]:
+    yield

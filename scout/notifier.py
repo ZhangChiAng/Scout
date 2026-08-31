@@ -1,4 +1,6 @@
-"""Feishu application-bot rich-text notification support."""
+"""Feishu interactive cards for personalized articles and feedback."""
+
+from __future__ import annotations
 
 import atexit
 import json
@@ -10,13 +12,11 @@ from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
 from lark_oapi.ws.client import loop as _lark_ws_loop
 
 from .config import FeishuDeliveryConfig
-from .digest import IssueDigest
-from .model import NewsItem
+from .model import DigestArticle, PersonalizedEvaluation, PreferenceProfile
+from .storage import CardDelivery, FeedbackEvidence
 
 
 def _close_unused_lark_ws_loop() -> None:
-    """Close the SDK's import-time websocket loop, unused by this HTTP client."""
-
     if not _lark_ws_loop.is_closed() and not _lark_ws_loop.is_running():
         _lark_ws_loop.close()
 
@@ -25,101 +25,205 @@ atexit.register(_close_unused_lark_ws_loop)
 
 
 class NotificationError(RuntimeError):
-    """Raised when Feishu does not accept a notification."""
+    """Raised when a card is invalid or Feishu rejects it."""
 
 
 @dataclass(frozen=True, slots=True)
-class Digest:
-    payload: dict[str, object]
-    items: tuple[NewsItem, ...]
-    encoded: bytes
+class SentMessage:
+    message_id: str
+    chat_id: str
 
 
-def build_failure_digest(
+def build_article_card(
+    article: DigestArticle,
+    evaluation: PersonalizedEvaluation,
     *,
-    title: str,
-    source: str,
-    article_title: str,
-    stage: str,
+    snapshot_id: int,
+    purpose: str,
     max_payload_bytes: int,
-) -> Digest:
-    """Build the small, non-recursive alert sent after an item failure."""
-
-    paragraphs = [
-        [
-            {
-                "tag": "text",
-                "text": (
-                    f"来源：{source[:200]}\n"
-                    f"文章：{article_title[:500]}\n"
-                    f"失败阶段：{stage[:100]}\n"
-                ),
-            }
-        ]
-    ]
-    payload = _payload(title, paragraphs)
-    encoded = encode_payload(payload)
-    if len(encoded) > max_payload_bytes:
-        raise NotificationError("failure alert exceeds the configured payload limit")
-    return Digest(payload=payload, items=(), encoded=encoded)
-
-
-def build_issue_digest(
-    issue: IssueDigest,
-    *,
-    items: tuple[NewsItem, ...] = (),
-    title: str,
-    max_payload_bytes: int,
-) -> Digest:
-    """Build the single Feishu message for one daily issue.
-
-    The overview renders as one section per category, each headline a blue
-    link to its source, followed by a full-page link.  The curated overview
-    is a few kilobytes, but the payload limit is still enforced.
-    """
-
-    paragraphs: list[list[dict[str, object]]] = []
-    category_order: list[str] = []
-    for entry in issue.overview:
-        if entry.category not in category_order:
-            category_order.append(entry.category)
-            paragraphs.append([{"tag": "text", "text": f"【{entry.category}】"}])
-        paragraphs.append(
-            [_headline_node(entry.headline, entry.url)],
-        )
-    if not paragraphs:
-        raise NotificationError("issue overview contains no entries")
-    page_url = issue.page_url
-    if page_url:
-        paragraphs.append([_headline_node("查看全文", page_url)])
-    payload = _payload(title, paragraphs)
-    encoded = encode_payload(payload)
-    if len(encoded) > max_payload_bytes:
-        raise NotificationError(
-            f"issue digest cannot fit within {max_payload_bytes} byte payload limit"
-        )
-    return Digest(payload=payload, items=items, encoded=encoded)
-
-
-def encode_payload(payload: dict[str, object]) -> bytes:
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(
-        "utf-8"
-    )
-
-
-def _payload(
-    title: str, paragraphs: list[list[dict[str, object]]]
+    feedback: FeedbackEvidence | None = None,
 ) -> dict[str, object]:
-    return {
-        "msg_type": "post",
-        "content": {"zh_cn": {"title": title, "content": paragraphs}},
+    reference = {"snapshot_id": snapshot_id, "purpose": purpose}
+    link_title = _md_escape(article.title)
+    title_line = (
+        f"[{link_title}]({_link_url(article.article_url)})"
+        if article.article_url
+        else link_title
+    )
+    number = f" · #{article.number}" if article.number else ""
+    feedback_block = []
+    if feedback is not None:
+        label = "喜欢" if feedback.sentiment == "like" else "不喜欢"
+        feedback_block = [
+            {"tag": "hr"},
+            _markdown(
+                f"**已记录反馈**：{label}\n**原因**：{_md_escape(feedback.reason)}"
+            ),
+        ]
+    card = {
+        "config": {"wide_screen_mode": True, "update_multi": True},
+        "header": {
+            "template": _verdict_template(evaluation.verdict),
+            "title": {
+                "tag": "plain_text",
+                "content": f"{evaluation.verdict} · {article.title}"[:120],
+            },
+        },
+        "elements": [
+            _markdown(f"**{title_line}**"),
+            _markdown(f"**分类**：{_md_escape(article.category or '未分类')}{number}"),
+            {"tag": "hr"},
+            _markdown(
+                f"**橘鸦摘要**\n{_md_escape(article.summary or '（未提供摘要）')}"
+            ),
+            _markdown(f"**详情**\n{_md_escape(article.detail or '（未提供详情）')}"),
+            {"tag": "hr"},
+            _markdown(
+                f"**Scout 判断：{evaluation.verdict}**\n{_md_escape(evaluation.reason)}"
+            ),
+            *feedback_block,
+            {
+                "tag": "action",
+                "actions": [
+                    _button("喜欢", "primary", reference, "like"),
+                    _button("不喜欢", "danger", reference, "dislike"),
+                ],
+            },
+        ],
     }
+    _check_card_size(card, max_payload_bytes)
+    return card
 
 
-def _headline_node(text: str, url: str) -> dict[str, object]:
-    if url:
-        return {"tag": "a", "text": f"{text}\n", "href": url}
-    return {"tag": "text", "text": f"{text}\n"}
+def build_feedback_form_card(
+    delivery: CardDelivery,
+    *,
+    sentiment: str,
+    max_payload_bytes: int,
+    error: str = "",
+) -> dict[str, object]:
+    label = "喜欢" if sentiment == "like" else "不喜欢"
+    reference = {
+        "action": "submit",
+        "snapshot_id": delivery.snapshot_id,
+        "purpose": delivery.purpose,
+        "sentiment": sentiment,
+    }
+    error_elements = (
+        [_markdown(f"<font color='red'>{_md_escape(error)}</font>")] if error else []
+    )
+    card = {
+        "config": {"wide_screen_mode": True, "update_multi": True},
+        "header": {
+            "template": "blue" if sentiment == "like" else "red",
+            "title": {
+                "tag": "plain_text",
+                "content": f"反馈：{label} · {delivery.article.title}"[:120],
+            },
+        },
+        "elements": [
+            _markdown(f"已选择 **{label}**。请填写原因后提交（必填，1–500 字）。"),
+            *error_elements,
+            {
+                "tag": "form",
+                "name": "scout_feedback",
+                "elements": [
+                    {
+                        "tag": "input",
+                        "name": "reason",
+                        "required": True,
+                        "max_length": 500,
+                        "placeholder": {
+                            "tag": "plain_text",
+                            "content": "请说明为什么喜欢或不喜欢这条新闻",
+                        },
+                        "label": {"tag": "plain_text", "content": "原因"},
+                        "label_position": "top",
+                    },
+                    {
+                        "tag": "button",
+                        "name": "submit_feedback",
+                        "action_type": "form_submit",
+                        "type": "primary",
+                        "text": {"tag": "plain_text", "content": "提交反馈"},
+                        "value": reference,
+                    },
+                ],
+            },
+        ],
+    }
+    _check_card_size(card, max_payload_bytes)
+    return card
+
+
+def build_recorded_card(
+    delivery: CardDelivery,
+    feedback: FeedbackEvidence,
+    *,
+    max_payload_bytes: int,
+) -> dict[str, object]:
+    label = "喜欢" if feedback.sentiment == "like" else "不喜欢"
+    reference = {
+        "action": "edit",
+        "snapshot_id": delivery.snapshot_id,
+        "purpose": delivery.purpose,
+    }
+    card = {
+        "config": {"wide_screen_mode": True, "update_multi": True},
+        "header": {
+            "template": "green",
+            "title": {"tag": "plain_text", "content": "反馈已记录"},
+        },
+        "elements": [
+            _markdown(f"**{_md_escape(delivery.article.title)}**"),
+            _markdown(
+                f"**倾向**：{label}\n**原因**：{_md_escape(feedback.reason)}\n"
+                f"**反馈修订 ID**：{feedback.revision_id}"
+            ),
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "type": "default",
+                        "text": {"tag": "plain_text", "content": "修改反馈"},
+                        "value": reference,
+                    }
+                ],
+            },
+        ],
+    }
+    _check_card_size(card, max_payload_bytes)
+    return card
+
+
+def build_profile_card(
+    profile: PreferenceProfile, *, max_payload_bytes: int
+) -> dict[str, object]:
+    def rules(title: str, values: tuple[str, ...]) -> str:
+        body = "\n".join(f"- {_md_escape(value)}" for value in values) or "- 暂无"
+        return f"**{title}**\n{body}"
+
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": "purple",
+            "title": {
+                "tag": "plain_text",
+                "content": f"Scout 偏好档案 v{profile.version} 已生效",
+            },
+        },
+        "elements": [
+            _markdown(rules("喜欢规则", profile.like_rules)),
+            _markdown(rules("不喜欢规则", profile.dislike_rules)),
+            _markdown(rules("权衡项", profile.tradeoffs)),
+            _markdown(rules("不确定项", profile.uncertainties)),
+            {"tag": "hr"},
+            _markdown(f"**版本变化**\n{_md_escape(profile.change_summary)}"),
+        ],
+    }
+    _check_card_size(card, max_payload_bytes)
+    return card
 
 
 class FeishuNotifier:
@@ -138,35 +242,37 @@ class FeishuNotifier:
                 f"Feishu OpenAPI client initialization failed: {type(exc).__name__}"
             ) from exc
 
-    def send(self, digest: Digest) -> None:
+    def send_card(self, card: dict[str, object]) -> SentMessage:
         try:
-            content = json.dumps(
-                digest.payload["content"], ensure_ascii=False, separators=(",", ":")
-            )
+            content = json.dumps(card, ensure_ascii=False, separators=(",", ":"))
             request = (
                 CreateMessageRequest.builder()
                 .receive_id_type(self.delivery.receive_id_type)
                 .request_body(
                     CreateMessageRequestBody.builder()
                     .receive_id(self.delivery.receive_id)
-                    .msg_type("post")
+                    .msg_type("interactive")
                     .content(content)
                     .build()
                 )
                 .build()
             )
             response = self._client.im.v1.message.create(request)  # type: ignore[attr-defined]
-            success = response.success()
         except Exception as exc:
             raise NotificationError(
                 f"Feishu OpenAPI request failed: {type(exc).__name__}"
             ) from exc
-
-        if not success:
+        if not response.success():
             code = getattr(response, "code", None)
-            if not isinstance(code, int):
-                code = None
-            raise NotificationError(f"Feishu rejected the message (code={code!r})")
+            raise NotificationError(f"Feishu rejected the card (code={code!r})")
+        data = getattr(response, "data", None)
+        message_id = getattr(data, "message_id", None)
+        chat_id = getattr(data, "chat_id", None)
+        if not isinstance(message_id, str) or not message_id:
+            raise NotificationError("Feishu success response has no message_id")
+        if not isinstance(chat_id, str) or not chat_id:
+            chat_id = self.delivery.receive_id
+        return SentMessage(message_id=message_id, chat_id=chat_id)
 
 
 def _build_client(delivery: FeishuDeliveryConfig, timeout_seconds: float) -> object:
@@ -177,3 +283,46 @@ def _build_client(delivery: FeishuDeliveryConfig, timeout_seconds: float) -> obj
         .timeout(timeout_seconds)
         .build()
     )
+
+
+def _button(
+    text: str,
+    button_type: str,
+    reference: dict[str, object],
+    sentiment: str,
+) -> dict[str, object]:
+    return {
+        "tag": "button",
+        "type": button_type,
+        "text": {"tag": "plain_text", "content": text},
+        "value": {"action": "select", "sentiment": sentiment, **reference},
+    }
+
+
+def _markdown(content: str) -> dict[str, object]:
+    return {"tag": "div", "text": {"tag": "lark_md", "content": content}}
+
+
+def _md_escape(value: str) -> str:
+    return (
+        value.replace("\\", "\\\\")
+        .replace("[", "\\[")
+        .replace("]", "\\]")
+        .replace("*", "\\*")
+    )
+
+
+def _link_url(value: str) -> str:
+    return value.replace(")", "%29").replace("(", "%28")
+
+
+def _verdict_template(verdict: str) -> str:
+    return {"推荐": "green", "不推荐": "red", "不确定": "orange"}[verdict]
+
+
+def _check_card_size(card: dict[str, object], max_payload_bytes: int) -> None:
+    encoded = json.dumps(card, ensure_ascii=False, separators=(",", ":")).encode()
+    if len(encoded) > max_payload_bytes:
+        raise NotificationError(
+            f"interactive card exceeds {max_payload_bytes} byte payload limit"
+        )

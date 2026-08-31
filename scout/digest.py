@@ -14,6 +14,13 @@ import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
+from .model import (
+    DigestArticle,
+    canonicalize_url,
+    make_article_content_hash,
+    make_article_key,
+)
+
 _ISSUE_DATE_PATTERN = re.compile(r"(\d{4}-\d{2}-\d{2})")
 _OVERVIEW_HEADING = "概览"
 _FULL_PAGE_LINK_TEXT = "查看网页全文"
@@ -41,6 +48,7 @@ class Section:
 
     title: str
     url: str
+    number: str
     summary: str
     detail: str
     related_links: tuple[RelatedLink, ...]
@@ -79,6 +87,101 @@ def parse_issue(html: str, *, page_url: str = "") -> IssueDigest:
     )
 
 
+def normalize_articles(
+    issue: IssueDigest, *, digest_key: str
+) -> tuple[DigestArticle, ...]:
+    """Match overview rows to body sections without ever dropping an overview row.
+
+    Matching is deliberately ordered: canonical source URL, code number, unique
+    normalized title, and finally the same position.  A missing body match simply
+    leaves the curated summary/detail empty.
+    """
+
+    sections = list(issue.sections)
+    url_indexes: dict[str, list[int]] = {}
+    number_indexes: dict[str, list[int]] = {}
+    title_indexes: dict[str, list[int]] = {}
+    for index, section in enumerate(sections):
+        url = canonicalize_url(section.url) if section.url else ""
+        if url:
+            url_indexes.setdefault(url, []).append(index)
+        if section.number:
+            number_indexes.setdefault(section.number, []).append(index)
+        title_indexes.setdefault(_match_title(section.title), []).append(index)
+
+    used: set[int] = set()
+    articles: list[DigestArticle] = []
+    used_keys: set[str] = set()
+    for position, overview in enumerate(issue.overview, start=1):
+        match = _unique_unused(
+            url_indexes.get(canonicalize_url(overview.url), []) if overview.url else [],
+            used,
+        )
+        if match is None and overview.number:
+            match = _unique_unused(number_indexes.get(overview.number, []), used)
+        if match is None:
+            match = _unique_unused(
+                title_indexes.get(_match_title(overview.headline), []), used
+            )
+        if match is None and position <= len(sections) and position - 1 not in used:
+            match = position - 1
+
+        section = sections[match] if match is not None else None
+        if match is not None:
+            used.add(match)
+        article_url = overview.url or (section.url if section is not None else "")
+        related_links = (
+            tuple((link.text, link.url) for link in section.related_links)
+            if section is not None
+            else ()
+        )
+        article_key = make_article_key(
+            digest_key=digest_key,
+            position=position,
+            number=overview.number,
+            title=overview.headline,
+            article_url=article_url,
+        )
+        if article_key in used_keys:
+            article_key = f"{article_key}#position:{position}"
+        used_keys.add(article_key)
+        summary = section.summary if section is not None else ""
+        detail = section.detail if section is not None else ""
+        articles.append(
+            DigestArticle(
+                digest_key=digest_key,
+                position=position,
+                number=overview.number,
+                category=overview.category,
+                title=overview.headline,
+                article_url=article_url,
+                summary=summary,
+                detail=detail,
+                related_links=related_links,
+                article_key=article_key,
+                content_hash=make_article_content_hash(
+                    category=overview.category,
+                    title=overview.headline,
+                    article_url=article_url,
+                    summary=summary,
+                    detail=detail,
+                    related_links=related_links,
+                ),
+            )
+        )
+    return tuple(articles)
+
+
+def _match_title(value: str) -> str:
+    value = re.sub(r"#\s*\d+\s*$", "", value)
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", value).casefold()
+
+
+def _unique_unused(indexes: list[int], used: set[int]) -> int | None:
+    available = [index for index in indexes if index not in used]
+    return available[0] if len(available) == 1 else None
+
+
 def _clean_text(parts: list[str]) -> str:
     return re.sub(r"\s+", " ", "".join(parts)).strip()
 
@@ -95,6 +198,7 @@ class _DigestParser(HTMLParser):
         self._h2: list[str] | None = None
         self._h3: list[str] | None = None
         self._h3_url = ""
+        self._h3_number = ""
         self._li: list[str] | None = None
         self._li_url = ""
         self._li_number = ""
@@ -118,6 +222,7 @@ class _DigestParser(HTMLParser):
         elif tag == "h3":
             self._h3 = []
             self._h3_url = ""
+            self._h3_number = ""
         elif tag == "li":
             self._finish_li()
             self._li = []
@@ -142,6 +247,8 @@ class _DigestParser(HTMLParser):
         if self._code_depth > 0:
             if self._li is not None:
                 self._li_number += data
+            elif self._h3 is not None:
+                self._h3_number += data
             return
         if self._link_stack:
             self._link_stack[-1][1].append(data)
@@ -196,6 +303,7 @@ class _DigestParser(HTMLParser):
                 self._section = {
                     "title": text,
                     "url": self._h3_url,
+                    "number": self._h3_number.strip().lstrip("#").strip(),
                     "summary": "",
                     "detail": "",
                     "related_links": [],
@@ -251,6 +359,7 @@ class _DigestParser(HTMLParser):
             Section(
                 title=str(section["title"]),
                 url=str(section["url"]),
+                number=str(section["number"]),
                 summary=str(section["summary"]),
                 detail=str(section["detail"]),
                 related_links=tuple(section["related_links"]),  # type: ignore[arg-type]

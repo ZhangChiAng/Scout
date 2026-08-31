@@ -57,6 +57,12 @@ class FeishuDeliveryConfig:
     receive_id: str
 
 
+@dataclass(frozen=True, slots=True)
+class FeishuAppCredentials:
+    app_id: str
+    app_secret: str
+
+
 @dataclass(frozen=True, slots=True, init=False)
 class AppConfig:
     sources: tuple[SourceConfig, ...]
@@ -191,6 +197,30 @@ def resolve_feishu_delivery(
         receive_id_type=receive_id_type,
         receive_id=values["FEISHU_RECEIVE_ID"],
     )
+
+
+def resolve_feishu_app_credentials(
+    *,
+    environ: dict[str, str] | os._Environ[str] | None = None,
+) -> FeishuAppCredentials:
+    """Resolve only the credentials required by the feedback listener."""
+
+    source = os.environ if environ is None else environ
+    app_id = source.get("FEISHU_APP_ID", "").strip()
+    app_secret = source.get("FEISHU_APP_SECRET", "").strip()
+    missing = [
+        name
+        for name, value in (
+            ("FEISHU_APP_ID", app_id),
+            ("FEISHU_APP_SECRET", app_secret),
+        )
+        if not value
+    ]
+    if missing:
+        raise ConfigError(
+            f"missing required Feishu environment variables: {', '.join(missing)}"
+        )
+    return FeishuAppCredentials(app_id=app_id, app_secret=app_secret)
 
 
 def _load_sources(raw: dict[str, object]) -> tuple[SourceConfig, ...]:

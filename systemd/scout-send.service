@@ -1,0 +1,12 @@
+[Unit]
+Description=Scout personalized Juya article delivery
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/workspace/signal-feed
+EnvironmentFile=%h/workspace/signal-feed/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/.local/bin/uv run --locked python -m scout --send
+
