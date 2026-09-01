@@ -44,6 +44,37 @@ def build_article_card(
     feedback: FeedbackEvidence | None = None,
 ) -> dict[str, object]:
     reference = {"snapshot_id": snapshot_id, "purpose": purpose}
+    elements = _article_elements(article, evaluation)
+    if feedback is not None:
+        label = "喜欢" if feedback.sentiment == "like" else "不喜欢"
+        elements.extend(
+            [
+                {"tag": "hr"},
+                _markdown(
+                    f"**已记录反馈**：{label}\n**原因**：{_md_escape(feedback.reason)}"
+                ),
+            ]
+        )
+    elements.append(
+        {
+            "tag": "action",
+            "actions": [
+                _button("喜欢", "primary", reference, "like"),
+                _button("不喜欢", "danger", reference, "dislike"),
+            ],
+        }
+    )
+    return _article_card(
+        article,
+        evaluation,
+        elements=elements,
+        max_payload_bytes=max_payload_bytes,
+    )
+
+
+def _article_elements(
+    article: DigestArticle, evaluation: PersonalizedEvaluation
+) -> list[dict[str, object]]:
     link_title = _md_escape(article.title)
     title_line = (
         f"[{link_title}]({_link_url(article.article_url)})"
@@ -51,15 +82,26 @@ def build_article_card(
         else link_title
     )
     number = f" · #{article.number}" if article.number else ""
-    feedback_block = []
-    if feedback is not None:
-        label = "喜欢" if feedback.sentiment == "like" else "不喜欢"
-        feedback_block = [
-            {"tag": "hr"},
-            _markdown(
-                f"**已记录反馈**：{label}\n**原因**：{_md_escape(feedback.reason)}"
-            ),
-        ]
+    return [
+        _markdown(f"**{title_line}**"),
+        _markdown(f"**分类**：{_md_escape(article.category or '未分类')}{number}"),
+        {"tag": "hr"},
+        _markdown(f"**橘鸦摘要**\n{_md_escape(article.summary or '（未提供摘要）')}"),
+        _markdown(f"**详情**\n{_md_escape(article.detail or '（未提供详情）')}"),
+        {"tag": "hr"},
+        _markdown(
+            f"**Scout 判断：{evaluation.verdict}**\n{_md_escape(evaluation.reason)}"
+        ),
+    ]
+
+
+def _article_card(
+    article: DigestArticle,
+    evaluation: PersonalizedEvaluation,
+    *,
+    elements: list[dict[str, object]],
+    max_payload_bytes: int,
+) -> dict[str, object]:
     card = {
         "config": {"wide_screen_mode": True, "update_multi": True},
         "header": {
@@ -69,27 +111,7 @@ def build_article_card(
                 "content": f"{evaluation.verdict} · {article.title}"[:120],
             },
         },
-        "elements": [
-            _markdown(f"**{title_line}**"),
-            _markdown(f"**分类**：{_md_escape(article.category or '未分类')}{number}"),
-            {"tag": "hr"},
-            _markdown(
-                f"**橘鸦摘要**\n{_md_escape(article.summary or '（未提供摘要）')}"
-            ),
-            _markdown(f"**详情**\n{_md_escape(article.detail or '（未提供详情）')}"),
-            {"tag": "hr"},
-            _markdown(
-                f"**Scout 判断：{evaluation.verdict}**\n{_md_escape(evaluation.reason)}"
-            ),
-            *feedback_block,
-            {
-                "tag": "action",
-                "actions": [
-                    _button("喜欢", "primary", reference, "like"),
-                    _button("不喜欢", "danger", reference, "dislike"),
-                ],
-            },
-        ],
+        "elements": elements,
     }
     _check_card_size(card, max_payload_bytes)
     return card
@@ -112,16 +134,13 @@ def build_feedback_form_card(
     error_elements = (
         [_markdown(f"<font color='red'>{_md_escape(error)}</font>")] if error else []
     )
-    card = {
-        "config": {"wide_screen_mode": True, "update_multi": True},
-        "header": {
-            "template": "blue" if sentiment == "like" else "red",
-            "title": {
-                "tag": "plain_text",
-                "content": f"反馈：{label} · {delivery.article.title}"[:120],
-            },
-        },
-        "elements": [
+    evaluation = PersonalizedEvaluation(
+        delivery.article.article_key, delivery.verdict, delivery.reason
+    )
+    elements = _article_elements(delivery.article, evaluation)
+    elements.extend(
+        [
+            {"tag": "hr"},
             _markdown(f"已选择 **{label}**。请填写原因后提交（必填，1–500 字）。"),
             *error_elements,
             {
@@ -150,10 +169,14 @@ def build_feedback_form_card(
                     },
                 ],
             },
-        ],
-    }
-    _check_card_size(card, max_payload_bytes)
-    return card
+        ]
+    )
+    return _article_card(
+        delivery.article,
+        evaluation,
+        elements=elements,
+        max_payload_bytes=max_payload_bytes,
+    )
 
 
 def build_recorded_card(
@@ -168,16 +191,16 @@ def build_recorded_card(
         "snapshot_id": delivery.snapshot_id,
         "purpose": delivery.purpose,
     }
-    card = {
-        "config": {"wide_screen_mode": True, "update_multi": True},
-        "header": {
-            "template": "green",
-            "title": {"tag": "plain_text", "content": "反馈已记录"},
-        },
-        "elements": [
-            _markdown(f"**{_md_escape(delivery.article.title)}**"),
+    evaluation = PersonalizedEvaluation(
+        delivery.article.article_key, delivery.verdict, delivery.reason
+    )
+    elements = _article_elements(delivery.article, evaluation)
+    elements.extend(
+        [
+            {"tag": "hr"},
             _markdown(
-                f"**倾向**：{label}\n**原因**：{_md_escape(feedback.reason)}\n"
+                f"**已记录反馈**：{label}\n"
+                f"**原因**：{_md_escape(feedback.reason)}\n"
                 f"**反馈修订 ID**：{feedback.revision_id}"
             ),
             {
@@ -191,10 +214,14 @@ def build_recorded_card(
                     }
                 ],
             },
-        ],
-    }
-    _check_card_size(card, max_payload_bytes)
-    return card
+        ]
+    )
+    return _article_card(
+        delivery.article,
+        evaluation,
+        elements=elements,
+        max_payload_bytes=max_payload_bytes,
+    )
 
 
 def build_profile_card(
