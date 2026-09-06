@@ -33,7 +33,8 @@ listener、档案审阅与回滚不调用模型。listener 只要求飞书 App I
 `api_key_env`；协议只允许 `openai_responses`，密钥变量只允许
 `SCOUT_LLM_API_KEY`，端点 URL 不得携带凭据、query 或 fragment。
 
-Responses 请求固定 60 秒超时、关闭 SDK 重试、`store=false`。输出使用严格
+Responses 请求固定 600 秒超时、关闭 SDK 重试、`store=false`。偏好归纳和条目
+评价统一设置 `max_output_tokens=65536`，预算包含思考与最终答案。输出使用严格
 `text.format` JSON Schema；客户端检查 `status == completed`，通过
 `output_text` 读取 JSON，并在失败时处理 `incomplete_details`。不降级到自由文本。
 

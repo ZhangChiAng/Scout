@@ -17,7 +17,9 @@ from .model import DigestArticle, PersonalizedEvaluation, PreferenceProfile
 from .storage import FeedbackEvidence
 
 LLM_API_KEY_ENV = "SCOUT_LLM_API_KEY"
-MODEL_TIMEOUT_SECONDS = 60.0
+MODEL_TIMEOUT_SECONDS = 600.0
+# Responses counts reasoning and final answer tokens against the same budget.
+MODEL_MAX_OUTPUT_TOKENS = 65_536
 EVALUATION_BATCH_SIZE = 8
 
 
@@ -184,7 +186,7 @@ class PersonalizationLLM:
                 "地方。evidence_ids 必须逐一且仅包含输入要求的 ID。"
             ),
             payload=payload,
-            max_output_tokens=5000,
+            max_output_tokens=MODEL_MAX_OUTPUT_TOKENS,
         )
         ids = data.get("evidence_ids")
         if not isinstance(ids, list) or sorted(ids) != sorted(expected_ids):
@@ -255,7 +257,7 @@ class PersonalizationLLM:
                 "的中文个性化理由，不使用分数，不过滤或重排条目。"
             ),
             payload=payload,
-            max_output_tokens=5000,
+            max_output_tokens=MODEL_MAX_OUTPUT_TOKENS,
         )
         raw = data.get("evaluations")
         if not isinstance(raw, list):
