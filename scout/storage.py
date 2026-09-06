@@ -4,7 +4,7 @@ import json
 import sqlite3
 from collections.abc import Iterable
 from contextlib import closing
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 
 from .issue_state import ISSUE_SCHEMAS
@@ -12,12 +12,16 @@ from .locking import sender_lock
 from .model import (
     PROFILE_CATEGORIES,
     PROFILE_FORMAT_VERSION,
+    CardDelivery,
     DigestArticle,
+    FeedbackEvidence,
+    FeedbackWrite,
     NewsItem,
     PersonalizedEvaluation,
     PreferenceEntry,
     PreferenceProfile,
     PreferenceUpdate,
+    ProfileSnapshot,
     canonicalize_url,
 )
 
@@ -25,13 +29,6 @@ from .model import (
 class StorageError(RuntimeError):
     """Raised when the SQLite database has an unsupported legacy schema."""
 
-
-SOURCE_FAILURE_ITEM_KEY = "__source__"
-STATE_FAILURE_ITEM_KEY = "__state__"
-BASELINE_FAILURE_ITEM_KEY = "__baseline__"
-RECONCILE_FAILURE_ITEM_KEY = "__reconcile__"
-UNSEEN_FAILURE_ITEM_KEY = "__unseen__"
-AGE_FAILURE_ITEM_KEY = "__age__"
 
 DELIVERED_SCHEMA = """
 CREATE TABLE IF NOT EXISTS delivered_items (
@@ -59,15 +56,6 @@ CREATE TABLE IF NOT EXISTS baseline_items (
     url TEXT NOT NULL,
     recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     PRIMARY KEY (source, dedupe_key)
-)
-"""
-
-ACTIVE_FAILURES_SCHEMA = """
-CREATE TABLE IF NOT EXISTS active_failures (
-    source TEXT NOT NULL,
-    item_key TEXT NOT NULL,
-    alerted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    PRIMARY KEY (source, item_key)
 )
 """
 
@@ -185,59 +173,6 @@ PREFERENCE_DETAIL_SCHEMAS = (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class CardDelivery:
-    delivery_id: int
-    snapshot_id: int
-    article: DigestArticle
-    purpose: str
-    message_id: str
-    chat_id: str
-    verdict: str
-    reason: str
-
-
-@dataclass(frozen=True, slots=True)
-class FeedbackEvidence:
-    revision_id: int
-    delivery_id: int
-    article_key: str
-    sentiment: str
-    reason: str
-    title: str
-    category: str
-    summary: str
-    detail: str
-    created_at: str
-
-
-@dataclass(frozen=True, slots=True)
-class FeedbackWrite:
-    revision_id: int
-    created: bool
-    sentiment: str
-    reason: str
-
-
-@dataclass(frozen=True, slots=True)
-class ProfileSnapshot:
-    """One closed read transaction fixes every input before calling the model."""
-
-    active: PreferenceProfile | None = None
-    feedback: tuple[FeedbackEvidence, ...] = ()
-    cutoff_revision_id: int = 0
-    next_version: int = 1
-    new_revision_count: int = 0
-    revisions_since_rebuild: int = 0
-    edited_processed_feedback: bool = False
-    rolled_back: bool = False
-
-    @property
-    def new_feedback(self) -> tuple[FeedbackEvidence, ...]:
-        processed = self.active.last_feedback_revision_id if self.active else 0
-        return tuple(f for f in self.feedback if f.revision_id > processed)
-
-
 class FeedbackError(ValueError):
     """Raised when a callback is invalid or belongs to a different owner."""
 
@@ -256,7 +191,6 @@ class SQLiteStorage:
                 self._initialize_delivered(connection)
                 connection.execute(SOURCE_STATE_SCHEMA)
                 connection.execute(BASELINE_SCHEMA)
-                connection.execute(ACTIVE_FAILURES_SCHEMA)
                 connection.execute(ARTICLE_SNAPSHOTS_SCHEMA)
                 connection.execute(CARD_DELIVERIES_SCHEMA)
                 connection.execute(FEEDBACK_REVISIONS_SCHEMA)
@@ -328,44 +262,11 @@ class SQLiteStorage:
             # here keeps a relisted article unseen-blocked even when the site
             # later changes its URL shape (for example a locale prefix).
             baseline_ids, baseline_urls = _baseline_state(connection)
-            seen_dedupe_keys = delivered_keys | baseline_keys
-            seen_item_ids = delivered_ids | baseline_ids
-            seen_urls = delivered_urls | baseline_urls
-            result: list[NewsItem] = []
-            for item in candidates:
-                dedupe_key = _item_dedupe_key(item)
-                item_id_key = (item.source, item.item_id)
-                url_key = (item.source, item.url)
-                is_ordinary_article = dedupe_key == canonicalize_url(item.url)
-                if dedupe_key in seen_dedupe_keys or (
-                    is_ordinary_article
-                    and (item_id_key in seen_item_ids or url_key in seen_urls)
-                ):
-                    continue
-                result.append(item)
-                seen_dedupe_keys.add(dedupe_key)
-                seen_item_ids.add(item_id_key)
-                if is_ordinary_article:
-                    seen_urls.add(url_key)
-            return result
-        finally:
-            connection.close()
-
-    def is_delivered(self, item: NewsItem, *, read_only: bool = False) -> bool:
-        connection = self._open_for_read(read_only)
-        if connection is None:
-            return False
-        try:
-            delivered_keys, delivered_ids, delivered_urls = _delivered_state(connection)
-            baseline_ids, baseline_urls = _baseline_state(connection)
-            dedupe_key = _item_dedupe_key(item)
-            is_ordinary_article = dedupe_key == canonicalize_url(item.url)
-            return dedupe_key in delivered_keys or (
-                is_ordinary_article
-                and (
-                    (item.source, item.item_id) in delivered_ids | baseline_ids
-                    or (item.source, item.url) in delivered_urls | baseline_urls
-                )
+            return _deduplicate_batch(
+                candidates,
+                seen_keys=delivered_keys | baseline_keys,
+                seen_ids=delivered_ids | baseline_ids,
+                seen_urls=delivered_urls | baseline_urls,
             )
         finally:
             connection.close()
@@ -377,7 +278,7 @@ class SQLiteStorage:
         self.initialize()
         with closing(sqlite3.connect(self.path)) as connection, connection:
             for item in delivered:
-                dedupe_key = _item_dedupe_key(item)
+                dedupe_key = item.dedupe_key
                 connection.execute(
                     """
                     INSERT INTO delivered_items (source, item_id, url, dedupe_key)
@@ -388,11 +289,6 @@ class SQLiteStorage:
                     """,
                     (item.source, item.item_id, item.url, dedupe_key, dedupe_key),
                 )
-            # Delivery is the recovery boundary for article-level failures.
-            connection.executemany(
-                "DELETE FROM active_failures WHERE source = ? AND item_key = ?",
-                ((item.source, _item_dedupe_key(item)) for item in delivered),
-            )
 
     def is_source_initialized(self, source: str, *, read_only: bool = False) -> bool:
         connection = self._open_for_read(read_only)
@@ -440,22 +336,12 @@ class SQLiteStorage:
                     VALUES (?, ?, ?, ?)
                     """,
                     (
-                        (source, _item_dedupe_key(item), item.item_id, item.url)
+                        (source, item.dedupe_key, item.item_id, item.url)
                         for item in baseline
                     ),
                 )
                 connection.execute(
                     "INSERT INTO source_state (source) VALUES (?)", (source,)
-                )
-                # Establishing the no-backfill baseline is the successful
-                # terminal state for a previously malformed historical entry.
-                connection.executemany(
-                    "DELETE FROM active_failures WHERE source = ? AND item_key = ?",
-                    ((source, _item_dedupe_key(item)) for item in baseline),
-                )
-                connection.execute(
-                    "DELETE FROM active_failures WHERE source = ? AND item_key = ?",
-                    (source, BASELINE_FAILURE_ITEM_KEY),
                 )
             except BaseException:
                 connection.rollback()
@@ -463,158 +349,6 @@ class SQLiteStorage:
             else:
                 connection.commit()
                 return True
-
-    def baseline_items(self, source: str, *, read_only: bool = False) -> frozenset[str]:
-        """Return every dedupe key captured in a source's first window."""
-
-        connection = self._open_for_read(read_only)
-        if connection is None:
-            return frozenset()
-        try:
-            if not _table_exists(connection, "baseline_items"):
-                return frozenset()
-            return frozenset(
-                row[0]
-                for row in connection.execute(
-                    "SELECT dedupe_key FROM baseline_items WHERE source = ?", (source,)
-                )
-            )
-        finally:
-            connection.close()
-
-    def is_baseline_item(self, item: NewsItem, *, read_only: bool = False) -> bool:
-        connection = self._open_for_read(read_only)
-        if connection is None:
-            return False
-        try:
-            return _item_dedupe_key(item) in _baseline_keys(connection)
-        finally:
-            connection.close()
-
-    def has_active_failure(
-        self, source: str, item_key: str, *, read_only: bool = False
-    ) -> bool:
-        connection = self._open_for_read(read_only)
-        if connection is None:
-            return False
-        try:
-            if not _table_exists(connection, "active_failures"):
-                return False
-            return (
-                connection.execute(
-                    """
-                    SELECT 1 FROM active_failures
-                    WHERE source = ? AND item_key = ? LIMIT 1
-                    """,
-                    (source, item_key),
-                ).fetchone()
-                is not None
-            )
-        finally:
-            connection.close()
-
-    def record_active_failure(self, source: str, item_key: str) -> bool:
-        """Record a successfully alerted failure, returning whether it was new."""
-
-        if not source or not item_key:
-            raise ValueError("source and item_key must not be empty")
-        self.initialize()
-        with closing(sqlite3.connect(self.path)) as connection, connection:
-            cursor = connection.execute(
-                """
-                INSERT OR IGNORE INTO active_failures (source, item_key)
-                VALUES (?, ?)
-                """,
-                (source, item_key),
-            )
-            return cursor.rowcount == 1
-
-    def clear_active_failure(self, source: str, item_key: str | None = None) -> int:
-        """Clear one recovered event, or all active events for a source."""
-
-        self.initialize()
-        with closing(sqlite3.connect(self.path)) as connection, connection:
-            if item_key is None:
-                cursor = connection.execute(
-                    "DELETE FROM active_failures WHERE source = ?", (source,)
-                )
-            else:
-                cursor = connection.execute(
-                    """
-                    DELETE FROM active_failures
-                    WHERE source = ? AND item_key = ?
-                    """,
-                    (source, item_key),
-                )
-            return cursor.rowcount
-
-    def clear_active_failure_keys(self, source: str, item_keys: Iterable[str]) -> int:
-        """Atomically clear a known set of recovered article events."""
-
-        keys = {key for key in item_keys if key}
-        if not source:
-            raise ValueError("source must not be empty")
-        if not keys:
-            return 0
-        self.initialize()
-        with closing(sqlite3.connect(self.path)) as connection, connection:
-            before = connection.total_changes
-            connection.executemany(
-                "DELETE FROM active_failures WHERE source = ? AND item_key = ?",
-                ((source, key) for key in keys),
-            )
-            return connection.total_changes - before
-
-    def clear_active_failures_with_prefix(self, source: str, prefix: str) -> int:
-        """Clear recovered internal event keys in one namespace.
-
-        Prefixes are generated by Scout itself, not accepted from SQL, so
-        escaping the LIKE wildcards makes the operation exact and predictable.
-        """
-
-        if not source or not prefix:
-            raise ValueError("source and prefix must not be empty")
-        escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        self.initialize()
-        with closing(sqlite3.connect(self.path)) as connection, connection:
-            cursor = connection.execute(
-                """
-                DELETE FROM active_failures
-                WHERE source = ? AND item_key LIKE ? ESCAPE '\\'
-                """,
-                (source, escaped + "%"),
-            )
-            return cursor.rowcount
-
-    def reconcile_active_failure_namespace(
-        self, source: str, prefix: str, active_keys: Iterable[str]
-    ) -> int:
-        """Clear namespaced failures that disappeared from the latest batch."""
-
-        current = set(active_keys)
-        if not source or not prefix:
-            raise ValueError("source and prefix must not be empty")
-        if any(not key.startswith(prefix) for key in current):
-            raise ValueError("active failure key is outside the requested namespace")
-        escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        self.initialize()
-        with closing(sqlite3.connect(self.path)) as connection, connection:
-            stored = {
-                row[0]
-                for row in connection.execute(
-                    """
-                    SELECT item_key FROM active_failures
-                    WHERE source = ? AND item_key LIKE ? ESCAPE '\\'
-                    """,
-                    (source, escaped + "%"),
-                )
-            }
-            stale = stored - current
-            connection.executemany(
-                "DELETE FROM active_failures WHERE source = ? AND item_key = ?",
-                ((source, key) for key in stale),
-            )
-            return len(stale)
 
     # -- Personalized article snapshots and delivery ---------------------
 
@@ -713,30 +447,6 @@ class SQLiteStorage:
         finally:
             connection.close()
 
-    def all_articles_delivered(
-        self, article_keys: Iterable[str], *, read_only: bool = False
-    ) -> bool:
-        keys = tuple(dict.fromkeys(article_keys))
-        if not keys:
-            return False
-        connection = self._open_for_read(read_only)
-        if connection is None:
-            return False
-        try:
-            if not _table_exists(connection, "card_deliveries"):
-                return False
-            placeholders = ",".join("?" for _ in keys)
-            count = connection.execute(
-                f"""
-                SELECT count(DISTINCT article_key) FROM card_deliveries
-                WHERE article_key IN ({placeholders})
-                """,
-                keys,
-            ).fetchone()[0]
-            return int(count) == len(keys)
-        finally:
-            connection.close()
-
     def record_card_delivery(
         self,
         *,
@@ -751,62 +461,59 @@ class SQLiteStorage:
             raise ValueError("unsupported card delivery purpose")
         self.initialize()
         with closing(self._connect()) as connection, connection:
-            cursor = connection.execute(
-                """
-                INSERT INTO card_deliveries (
-                    snapshot_id, article_key, purpose, message_id, chat_id,
-                    verdict, reason
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(snapshot_id, purpose) DO NOTHING
-                """,
-                (
-                    snapshot_id,
-                    article_key,
-                    purpose,
-                    message_id,
-                    chat_id,
-                    evaluation.verdict,
-                    evaluation.reason,
-                ),
+            return self._record_card_delivery(
+                connection,
+                snapshot_id=snapshot_id,
+                article_key=article_key,
+                purpose=purpose,
+                message_id=message_id,
+                chat_id=chat_id,
+                evaluation=evaluation,
             )
-            if cursor.rowcount == 1:
-                return int(cursor.lastrowid)
-            row = connection.execute(
-                """
-                SELECT delivery_id FROM card_deliveries
-                WHERE snapshot_id = ? AND purpose = ?
-                """,
-                (snapshot_id, purpose),
-            ).fetchone()
-            if row is None:
-                raise StorageError("card delivery could not be recorded")
-            return int(row[0])
 
-    def get_card_delivery(
-        self, delivery_id: int, *, read_only: bool = False
-    ) -> CardDelivery | None:
-        connection = self._open_for_read(read_only)
-        if connection is None:
-            return None
-        try:
-            if not _table_exists(connection, "card_deliveries"):
-                return None
-            row = connection.execute(
-                """
-                SELECT d.delivery_id, d.snapshot_id, d.purpose, d.message_id,
-                       d.chat_id, d.verdict, d.reason,
-                       s.digest_key, s.position, s.number, s.category, s.title,
-                       s.article_url, s.summary, s.detail, s.related_links_json,
-                       s.article_key, s.content_hash
-                FROM card_deliveries d
-                JOIN article_snapshots s ON s.snapshot_id = d.snapshot_id
-                WHERE d.delivery_id = ?
-                """,
-                (delivery_id,),
-            ).fetchone()
-            return _card_delivery(row) if row is not None else None
-        finally:
-            connection.close()
+    @staticmethod
+    def _record_card_delivery(
+        connection: sqlite3.Connection,
+        *,
+        snapshot_id: int,
+        article_key: str,
+        purpose: str,
+        message_id: str,
+        chat_id: str,
+        evaluation: PersonalizedEvaluation,
+    ) -> int:
+        """Record delivery within the caller's transaction, reusing prior success."""
+
+        cursor = connection.execute(
+            """
+            INSERT INTO card_deliveries (
+                snapshot_id, article_key, purpose, message_id, chat_id,
+                verdict, reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(snapshot_id, purpose) DO NOTHING
+            """,
+            (
+                snapshot_id,
+                article_key,
+                purpose,
+                message_id,
+                chat_id,
+                evaluation.verdict,
+                evaluation.reason,
+            ),
+        )
+        if cursor.rowcount == 1:
+            return int(cursor.lastrowid)
+        row = connection.execute(
+            """
+            SELECT delivery_id FROM card_deliveries
+            WHERE snapshot_id = ? AND purpose = ?
+            """,
+            (snapshot_id, purpose),
+        ).fetchone()
+        if row is None:
+            raise StorageError("card delivery could not be recorded")
+        return int(row[0])
 
     def get_card_delivery_by_snapshot(
         self,
@@ -912,10 +619,25 @@ class SQLiteStorage:
     def latest_feedback_for_delivery(
         self, delivery_id: int, *, read_only: bool = False
     ) -> FeedbackEvidence | None:
-        evidence = self.feedback_evidence(read_only=read_only)
-        return next(
-            (item for item in evidence if item.delivery_id == delivery_id), None
-        )
+        connection = self._open_for_read(read_only)
+        if connection is None:
+            return None
+        try:
+            if not _table_exists(connection, "feedback_revisions"):
+                return None
+            row = connection.execute(
+                """SELECT f.revision_id, f.delivery_id, s.article_key, f.sentiment,
+                          f.reason, s.title, s.category, s.summary, s.detail, f.created_at
+                   FROM feedback_revisions f
+                   JOIN card_deliveries d ON d.delivery_id = f.delivery_id
+                   JOIN article_snapshots s ON s.snapshot_id = d.snapshot_id
+                   WHERE f.delivery_id = ?
+                   ORDER BY f.revision_id DESC LIMIT 1""",
+                (delivery_id,),
+            ).fetchone()
+            return FeedbackEvidence(*row) if row is not None else None
+        finally:
+            connection.close()
 
     def feedback_evidence(
         self, *, read_only: bool = False, cutoff: int | None = None
@@ -930,31 +652,6 @@ class SQLiteStorage:
                 _feedback_evidence(connection)
                 if cutoff is None
                 else _feedback_evidence(connection, cutoff=cutoff)
-            )
-        finally:
-            connection.close()
-
-    def recent_feedback(
-        self, sentiment: str, *, limit: int = 4, read_only: bool = False
-    ) -> tuple[FeedbackEvidence, ...]:
-        values = [
-            item
-            for item in reversed(self.feedback_evidence(read_only=read_only))
-            if item.sentiment == sentiment
-        ]
-        return tuple(values[:limit])
-
-    def max_feedback_revision_id(self, *, read_only: bool = False) -> int:
-        connection = self._open_for_read(read_only)
-        if connection is None:
-            return 0
-        try:
-            if not _table_exists(connection, "feedback_revisions"):
-                return 0
-            return int(
-                connection.execute(
-                    "SELECT coalesce(max(revision_id), 0) FROM feedback_revisions"
-                ).fetchone()[0]
             )
         finally:
             connection.close()
@@ -1378,13 +1075,19 @@ def _baseline_state(
     return ids, urls
 
 
-def _deduplicate_batch(items: list[NewsItem]) -> list[NewsItem]:
+def _deduplicate_batch(
+    items: list[NewsItem],
+    *,
+    seen_keys: set[str] | None = None,
+    seen_ids: set[tuple[str, str]] | None = None,
+    seen_urls: set[tuple[str, str]] | None = None,
+) -> list[NewsItem]:
     result: list[NewsItem] = []
-    seen_keys: set[str] = set()
-    seen_ids: set[tuple[str, str]] = set()
-    seen_urls: set[tuple[str, str]] = set()
+    seen_keys = set() if seen_keys is None else seen_keys
+    seen_ids = set() if seen_ids is None else seen_ids
+    seen_urls = set() if seen_urls is None else seen_urls
     for item in items:
-        dedupe_key = _item_dedupe_key(item)
+        dedupe_key = item.dedupe_key
         item_id_key = (item.source, item.item_id)
         url_key = (item.source, item.url)
         ordinary = dedupe_key == canonicalize_url(item.url)
@@ -1398,10 +1101,6 @@ def _deduplicate_batch(items: list[NewsItem]) -> list[NewsItem]:
         if ordinary:
             seen_urls.add(url_key)
     return result
-
-
-def _item_dedupe_key(item: NewsItem) -> str:
-    return item.dedupe_key
 
 
 def _card_delivery(row: sqlite3.Row | tuple[object, ...]) -> CardDelivery:

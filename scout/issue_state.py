@@ -268,10 +268,6 @@ class IssueState:
             ]
             return tuple(self._read_list(conn, value) for value in ids)
 
-    def get_list(self, list_id: int) -> FilteredList:
-        with closing(self.storage._connect_read_only()) as conn:
-            return self._read_list(conn, list_id)
-
     def create_lists(
         self,
         *,
@@ -447,24 +443,15 @@ class IssueState:
         m = request.member
         with closing(self.storage._connect()) as conn, conn:
             conn.execute("BEGIN IMMEDIATE")
-            conn.execute(
-                """INSERT INTO card_deliveries
-                (snapshot_id, article_key, purpose, message_id, chat_id, verdict, reason)
-                VALUES (?, ?, 'personalized', ?, ?, ?, ?)
-                ON CONFLICT(snapshot_id, purpose) DO NOTHING""",
-                (
-                    m.snapshot_id,
-                    m.article.article_key,
-                    message_id,
-                    chat_id,
-                    m.evaluation.verdict,
-                    m.evaluation.reason,
-                ),
+            delivery_id = self.storage._record_card_delivery(
+                conn,
+                snapshot_id=m.snapshot_id,
+                article_key=m.article.article_key,
+                purpose="personalized",
+                message_id=message_id,
+                chat_id=chat_id,
+                evaluation=m.evaluation,
             )
-            delivery_id = conn.execute(
-                "SELECT delivery_id FROM card_deliveries WHERE snapshot_id=? AND purpose='personalized'",
-                (m.snapshot_id,),
-            ).fetchone()[0]
             conn.execute(
                 "UPDATE reveal_requests SET status='delivered', delivery_id=?, last_error='' WHERE member_id=?",
                 (delivery_id, m.member_id),

@@ -1,4 +1,4 @@
-"""Deterministic collectors for the supported official source formats."""
+"""Collect and normalize the configured Juya RSS feed."""
 
 from __future__ import annotations
 
@@ -7,11 +7,9 @@ import logging
 import re
 import time
 import xml.etree.ElementTree as ET
-from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
-from typing import overload
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlsplit
 from urllib.request import Request, urlopen
@@ -40,36 +38,13 @@ class CollectionIssue:
     message: str = ""
     index: int | None = None
 
-    @property
-    def item_title(self) -> str:
-        return self.title
-
-    @property
-    def error(self) -> str:
-        return self.message
-
 
 @dataclass(frozen=True, slots=True)
-class CollectionBatch(Sequence[NewsItem]):
+class CollectionBatch:
     """Valid items plus independent entry-level parsing issues."""
 
     items: tuple[NewsItem, ...]
     issues: tuple[CollectionIssue, ...] = ()
-
-    def __iter__(self) -> Iterator[NewsItem]:
-        return iter(self.items)
-
-    @overload
-    def __getitem__(self, index: int) -> NewsItem: ...
-
-    @overload
-    def __getitem__(self, index: slice) -> tuple[NewsItem, ...]: ...
-
-    def __getitem__(self, index: int | slice) -> NewsItem | tuple[NewsItem, ...]:
-        return self.items[index]
-
-    def __len__(self) -> int:
-        return len(self.items)
 
 
 class _TextExtractor(HTMLParser):
@@ -124,19 +99,19 @@ def _fetch_error_detail(exc: BaseException) -> str:
     return f"{name}: {detail}" if detail else name
 
 
-class _BaseCollector:
-    accept = "*/*"
-    response_name = "source"
+class RSSCollector:
+    """Collect the first configured number of items in RSS feed order."""
+
+    accept = "application/rss+xml, application/xml;q=0.9"
+    response_name = "RSS"
 
     def __init__(
         self,
         source: SourceConfig,
         network: NetworkConfig,
-        opener: Callable[..., object] = urlopen,
     ) -> None:
         self.source = source
         self.network = network
-        self._opener = opener
 
     def _fetch_bytes(self) -> bytes:
         headers = {
@@ -147,9 +122,7 @@ class _BaseCollector:
         for attempt in range(1, FETCH_ATTEMPTS + 1):
             request = Request(self.source.url, headers=headers, method="GET")
             try:
-                with self._opener(
-                    request, timeout=self.network.timeout_seconds
-                ) as response:
+                with urlopen(request, timeout=self.network.timeout_seconds) as response:
                     payload = response.read(self.network.max_bytes + 1)
             except Exception as exc:
                 if attempt < FETCH_ATTEMPTS and _is_transient_fetch_error(exc):
@@ -194,13 +167,6 @@ class _BaseCollector:
             message=message,
             index=index,
         )
-
-
-class RSSCollector(_BaseCollector):
-    """Collect the first configured number of items in RSS feed order."""
-
-    accept = "application/rss+xml, application/xml;q=0.9"
-    response_name = "RSS"
 
     def collect(self) -> CollectionBatch:
         payload = self._fetch_bytes()
@@ -312,32 +278,12 @@ def _allowed_item_url(target: str, base_url: str) -> str:
     return url
 
 
-CollectorType = type[RSSCollector]
-
-COLLECTOR_REGISTRY: dict[str, CollectorType] = {
-    "rss": RSSCollector,
-}
-
-
-def create_collector(
-    source: SourceConfig,
-    network: NetworkConfig,
-    opener: Callable[..., object] = urlopen,
-) -> RSSCollector:
-    """Instantiate the deterministic collector selected by ``source``."""
-
-    try:
-        collector_type = COLLECTOR_REGISTRY[source.collector]
-    except KeyError as exc:  # Defensive for programmatically forged configs.
-        raise CollectionError(f"unsupported collector: {source.collector}") from exc
-    return collector_type(source, network, opener)
-
-
 def collect_source(
     source: SourceConfig,
     network: NetworkConfig,
-    opener: Callable[..., object] = urlopen,
 ) -> CollectionBatch:
-    """Collect one configured source through the public registry seam."""
+    """Collect the configured RSS source."""
 
-    return create_collector(source, network, opener).collect()
+    if source.collector != "rss":
+        raise CollectionError(f"unsupported collector: {source.collector}")
+    return RSSCollector(source, network).collect()

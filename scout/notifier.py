@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import atexit
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import lark_oapi as lark
@@ -18,8 +18,13 @@ from lark_oapi.ws.client import loop as _lark_ws_loop
 
 from .config import FeishuDeliveryConfig
 from .issue_state import FilteredList, ListMember
-from .model import DigestArticle, PersonalizedEvaluation, PreferenceProfile
-from .storage import CardDelivery, FeedbackEvidence
+from .model import (
+    CardDelivery,
+    DigestArticle,
+    FeedbackEvidence,
+    PersonalizedEvaluation,
+    PreferenceProfile,
+)
 
 
 def _close_unused_lark_ws_loop() -> None:
@@ -390,12 +395,10 @@ class FeishuNotifier:
         self,
         delivery: FeishuDeliveryConfig,
         timeout_seconds: float,
-        client_factory: Callable[[FeishuDeliveryConfig, float], object] | None = None,
     ) -> None:
         self.delivery = delivery
-        factory = _build_client if client_factory is None else client_factory
         try:
-            self._client = factory(delivery, timeout_seconds)
+            self._client = _build_client(delivery, timeout_seconds)
         except Exception as exc:
             raise NotificationError(
                 f"Feishu OpenAPI client initialization failed: {type(exc).__name__}"
@@ -425,7 +428,7 @@ class FeishuNotifier:
                 )
                 .build()
             )
-            response = self._client.im.v1.message.create(request)  # type: ignore[attr-defined]
+            response = self._client.im.v1.message.create(request)
         except Exception as exc:
             raise NotificationError(
                 f"Feishu OpenAPI request failed: {type(exc).__name__}"
@@ -467,7 +470,9 @@ class FeishuNotifier:
             )
 
 
-def _build_client(delivery: FeishuDeliveryConfig, timeout_seconds: float) -> object:
+def _build_client(
+    delivery: FeishuDeliveryConfig, timeout_seconds: float
+) -> lark.Client:
     return (
         lark.Client.builder()
         .app_id(delivery.app_id)

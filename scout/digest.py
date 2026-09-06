@@ -4,18 +4,21 @@ The Juya AI daily feed ships one item per day whose ``content:encoded`` holds
 the full issue page: a cover image, an ``<h1>``, a ``概览`` section grouping
 headlines by category, and article sections with a blockquote summary,
 paragraph detail, images, and related links.  This module extracts the
-structure with the standard-library ``HTMLParser`` so the app can render a
-Feishu message from the overview today and personalize per-article later.
+structure with the standard-library ``HTMLParser`` for article evaluation
+and Feishu delivery.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import date
 from html.parser import HTMLParser
 
+from .datetime_utils import publication_date_bound
 from .model import (
     DigestArticle,
+    NewsItem,
     canonicalize_url,
     make_article_content_hash,
     make_article_key,
@@ -64,10 +67,6 @@ class IssueDigest:
     page_url: str
 
 
-class DigestError(ValueError):
-    """Raised when issue HTML cannot be parsed into a usable digest."""
-
-
 def parse_issue(html: str, *, page_url: str = "") -> IssueDigest:
     """Parse one issue's ``content:encoded`` HTML into a structured digest.
 
@@ -85,6 +84,16 @@ def parse_issue(html: str, *, page_url: str = "") -> IssueDigest:
         sections=tuple(parser.sections),
         page_url=resolved_page_url,
     )
+
+
+def issue_date_for(item: NewsItem) -> str:
+    issue_date = parse_issue(item.content, page_url=item.url).issue_date
+    if issue_date:
+        return date.fromisoformat(issue_date).isoformat()
+    bound = publication_date_bound(item.published_at)
+    if bound is None:
+        raise ValueError(f"issue has no identifiable date: {item.title}")
+    return bound.isoformat()
 
 
 def normalize_articles(

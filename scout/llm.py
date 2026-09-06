@@ -6,10 +6,9 @@ import json
 import os
 import re
 import tomllib
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from openai import AsyncOpenAI
 
@@ -18,12 +17,13 @@ from .model import (
     PROFILE_CATEGORIES,
     PROFILE_FORMAT_VERSION,
     DigestArticle,
+    FeedbackEvidence,
     PersonalizedEvaluation,
     PreferenceEntry,
     PreferenceProfile,
     PreferenceUpdate,
+    ProfileSnapshot,
 )
-from .storage import FeedbackEvidence, ProfileSnapshot
 
 LLM_API_KEY_ENV = "SCOUT_LLM_API_KEY"
 MODEL_TIMEOUT_SECONDS = 600.0
@@ -225,22 +225,6 @@ def load_required_model_config(
     return config
 
 
-def load_optional_model_config(
-    path: str | Path = "models.toml",
-    *,
-    environ: dict[str, str] | os._Environ[str] | None = None,
-) -> ModelConfig | None:
-    """Compatibility seam for non-personalized commands."""
-
-    source = os.environ if environ is None else environ
-    config_path = Path(path)
-    if not config_path.exists() or not source.get(LLM_API_KEY_ENV):
-        return None
-    config = load_models_config(config_path)
-    resolve_api_key(config, environ=source)
-    return config
-
-
 def load_models_config(path: str | Path = "models.toml") -> ModelConfig:
     config_path = Path(path)
     try:
@@ -290,11 +274,9 @@ def resolve_api_key(
 def build_client(
     config: ModelConfig,
     api_key: str,
-    *,
-    client_factory: Callable[..., Any] = AsyncOpenAI,
 ) -> AsyncOpenAI:
     try:
-        return client_factory(
+        return AsyncOpenAI(
             api_key=api_key,
             base_url=config.base_url,
             timeout=MODEL_TIMEOUT_SECONDS,

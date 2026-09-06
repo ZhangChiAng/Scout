@@ -206,15 +206,25 @@ systemctl --user list-timers scout-send.timer scout-profile-update.timer
 白天先检查 `issue_snapshots`：当天已有完整快照就不再请求 RSS，重启后仍有效。
 没有当天快照时抓取 RSS，并在模型调用前保存有效期内的完整日报；解析或保存失败
 不算抓取成功。合并 RSS 与本地快照后按日期从早到晚处理，保留原基线和去重规则。
-`max_age_days=3` 沿用原边界：仅跳过发布时间的北京日期早于“今天减 3 天”的日报。
+`max_age_days=3` 仅跳过发布时间的北京日期早于“今天减 3 天”的日报。
 发送失败从 SQLite 重试未完成部分，较早一期未完成时暂停后续日期；全已完成时
 跳过模型与飞书阶段。12:30 后才发布的内容次日补抓。
 
 运行日志包括 RSS 请求起止、发布时间、返回期次、首次新闻快照保存时间、跳过
-抓取原因，以及偏好、评价缓存、正文、列表和整期完成状态。
-上线与自然场景观察见 [定时推送验收记录](docs/acceptance-schedule-2026-09-06.md)。
-历史记录见 [列表验收](docs/acceptance-2026-09-02.md) 和
-[偏好验收](docs/acceptance-profile-2026-09-06.md)。
+抓取原因，以及偏好、评价缓存、正文、列表和整期完成状态。`first_saved_at` 来自
+该日报最早条目快照的保存时间，不代表每次网络抓取时间。
+
+查看当前服务状态与日志：
+
+```bash
+systemctl --user list-timers scout-send.timer scout-profile-update.timer
+systemctl --user status scout-feedback.service scout-send.service scout-profile-update.service
+journalctl --user -u scout-feedback.service -u scout-send.service -u scout-profile-update.service --since today
+uv run --locked python -m scout --profile-show
+```
+
+修改数据库结构或修复数据前，在 sender 写操作锁内使用 SQLite backup API 备份
+真实库，并检查备份的完整性。不要通过复制正在写入的数据库文件替代备份。
 
 ## 工程检查与已知边界
 
@@ -226,9 +236,12 @@ systemctl --user list-timers scout-send.timer scout-profile-update.timer
 uv run --locked ruff check .
 uv run --locked ruff format --check .
 uv run --locked python -m compileall -q scout
+git diff --check
 ```
 
 列表及按需正文在发送前持久化 UUID，并使用 SQLite 唯一约束。飞书对相同 UUID
 提供 [1 小时发送去重](https://open.feishu.cn/document/server-docs/im-v1/message/create)，
 可减少远端成功、本地提交前崩溃导致的重复。跨系统仍非原子事务，超过飞书去重
-窗口的未知结果重试仍可能重复；普通新闻及档案通知保留原有记账方式。
+窗口的未知结果重试仍可能重复；普通新闻及档案通知在远端成功后才本地记账，
+这一间隙中断也可能导致重试重复。真实验收要求见
+[规格](docs/scout-spec.md#9-工程检查与验证边界)。

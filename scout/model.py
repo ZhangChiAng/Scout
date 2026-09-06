@@ -2,7 +2,7 @@
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 _TRACKING_QUERY_NAMES = {
@@ -60,11 +60,7 @@ def canonicalize_url(url: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class NewsItem:
-    """A normalized feed entry.
-
-    Every field is a string so collectors can be swapped without changing the
-    filtering, storage, or notification boundaries.
-    """
+    """A normalized RSS issue with a stable delivery identity."""
 
     source: str
     item_id: str
@@ -82,16 +78,6 @@ class NewsItem:
         if not key:
             raise ValueError("NewsItem.dedupe_key must not be empty")
         object.__setattr__(self, "dedupe_key", key)
-
-
-@dataclass(frozen=True, slots=True)
-class ChineseSummary:
-    title_zh: str
-    bullets_zh: tuple[str, ...]
-
-    def apply_to(self, item: NewsItem) -> NewsItem:
-        content = "\n".join(f"• {bullet}" for bullet in self.bullets_zh)
-        return replace(item, title=self.title_zh, content=content)
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,6 +243,68 @@ class PreferenceProfile:
             ("权衡项", self.tradeoffs),
             ("不确定项", self.uncertainties),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class CardDelivery:
+    delivery_id: int
+    snapshot_id: int
+    article: DigestArticle
+    purpose: str
+    message_id: str
+    chat_id: str
+    verdict: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class FeedbackEvidence:
+    revision_id: int
+    delivery_id: int
+    article_key: str
+    sentiment: str
+    reason: str
+    title: str
+    category: str
+    summary: str
+    detail: str
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class FeedbackWrite:
+    revision_id: int
+    created: bool
+    sentiment: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProfileSnapshot:
+    """Preference inputs fixed by one completed read transaction."""
+
+    active: PreferenceProfile | None = None
+    feedback: tuple[FeedbackEvidence, ...] = ()
+    cutoff_revision_id: int = 0
+    next_version: int = 1
+    new_revision_count: int = 0
+    revisions_since_rebuild: int = 0
+    edited_processed_feedback: bool = False
+    rolled_back: bool = False
+
+    @property
+    def new_feedback(self) -> tuple[FeedbackEvidence, ...]:
+        processed = self.active.last_feedback_revision_id if self.active else 0
+        return tuple(f for f in self.feedback if f.revision_id > processed)
+
+
+@dataclass(slots=True)
+class RunStats:
+    sent: int = 0
+    previewed: int = 0
+    failed: int = 0
+    baseline: int = 0
+    skipped: int = 0
 
 
 def make_article_key(
