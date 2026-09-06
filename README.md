@@ -22,7 +22,7 @@ cp models.example.toml models.toml
 
 编辑 `.env`：
 
-- `SCOUT_LLM_API_KEY`：个性化发送、只读评价及两个偏好重整命令必需；
+- `SCOUT_LLM_API_KEY`：个性化发送、只读评价、偏好更新及重整命令必需；
 - `FEISHU_APP_ID`、`FEISHU_APP_SECRET`：listener、发送与校准必需；
 - `FEISHU_RECEIVE_ID_TYPE=chat_id`、`FEISHU_RECEIVE_ID`：发送、listener 与校准的群目标；
 - `SCOUT_DB_PATH`：可选，默认 `data/scout.sqlite3`。
@@ -87,8 +87,14 @@ uv run --locked python -m scout --send
 # 真实拉 RSS 和调用模型，但 SQLite 完全零写入，也不联系飞书
 uv run --locked python -m scout --dry-run
 
-# 更新档案，只处理 RSS 中最新一期，不自动追赶历史日报
+# 人工更新档案，按日期从早到晚补齐有效期内未推送的日报
 uv run --locked python -m scout --send
+
+# 定时入口：仅在北京 09:30–12:30 启动，使用最近一次已保存的偏好
+uv run --locked python -m scout --send --scheduled
+
+# 每日 19:00 的偏好更新入口；只处理当天 19:00 前已保存的反馈
+uv run --locked python -m scout --profile-update
 
 # 精确补发一期，忽略年龄和首轮基线；不会重发已送达正文或已呈现标题
 uv run --locked python -m scout --send --issue-date 2026-09-02
@@ -110,9 +116,10 @@ uv run --locked python -m scout --profile-rollback 1
 
 `--issue-date` 只可搭配 `--send` 或 `--dry-run`，必须为 `YYYY-MM-DD`。优先读取
 RSS；该日期已退出 RSS 或 RSS 暂时不可达时，使用 SQLite 中已有的完整日报快照。
-没有完整快照会明确报错，不会换成其他日期。历史日报需逐期明确指定。
+没有完整快照会明确报错，不会换成其他日期。有效期外的历史日报需逐期明确指定。
+`--scheduled` 只可搭配 `--send`，不能同时使用 `--issue-date`。
 所有模式互斥；两个重整命令均不接受 `--issue-date`。正式重整、sender、校准和
-回滚共用写操作锁。重整通知失败后新档案仍然生效且保留待通知状态；重试优先补发
+回滚、每日偏好更新共用写操作锁。重整通知失败后新档案仍然生效且保留待通知状态；重试优先补发
 已生成版本，没有新反馈时不会再次调用模型生成。已通知版本再次手动重整仍会强制
 生成新版本。
 
@@ -132,7 +139,9 @@ RSS；该日期已退出 RSS 或 RSS 暂时不可达时，使用 SQLite 中已�
 首次达到两条喜欢、两条不喜欢时全量归纳；旧格式切换、自上次全量后累计 20 条
 真实反馈修订、修改已处理反馈、手动重整、回滚后首次有新反馈，都直接进行全量
 重整，不先发一次增量请求。回调仍只记录反馈，在下一次偏好更新时应用这些触发
-条件；timer 停用期间不自动启动 sender。
+条件。自动偏好更新仅在北京时间每日 19:00 执行，之后提交的反馈留到次日；
+白天定时发送使用最近一次保存的偏好和该版本已消费的反馈，不触发偏好更新。
+人工 `--send` 与重整入口仍可主动更新偏好。
 
 全量只使用每张卡片当前有效的最新版反馈及原新闻上下文，旧偏好仅用于变化说明。
 每条结论必须关联有效依据，不要求每条反馈都形成结论。增量可引用本轮反馈或上版
@@ -143,7 +152,8 @@ RSS；该日期已退出 RSS 或 RSS 暂时不可达时，使用 SQLite 中已�
 每轮先在一致的只读事务中固定反馈截止位置，随即关闭事务再调用模型；期间新到
 反馈留待下一轮。新偏好、逐条依据、活动版本、更新方式和消费进度在一个短事务中
 提交。修订数使用真实行数，不能用 ID 差值代替；模型或校验失败不推进进度，发送
-流程停止。首期不分批归纳历史，超出模型容量时明确失败，不静默删减历史。
+流程停止。19:00 更新失败保留原偏好和未消费反馈，次日 19:00 重试；
+白天仍使用原偏好。没有可用偏好时只保存日报，不发送新闻。首期不分批归纳历史，超出模型容量时明确失败，不静默删减历史。
 
 命令日志及 `--profile-show/--profile-history` 显示更新方式、输入反馈条数、
 真实修订条数、判断规则条数、可读偏好字符数及输入字符数。`input_chars` 是
@@ -168,13 +178,15 @@ sender 和 listener 各有独立进程锁。SQLite 使用短事务及 5 秒 busy
 ## systemd 用户服务
 
 仓库位于默认的 `%h/workspace/signal-feed` 时，可以直接安装；如果路径不同，先
-修改三个 unit 的 `WorkingDirectory`、`EnvironmentFile` 和 `ExecStart`。
+修改 service unit 的 `WorkingDirectory`、`EnvironmentFile` 和 `ExecStart`。
 
 ```bash
 mkdir -p ~/.config/systemd/user
 ln -sf "$PWD/systemd/scout-feedback.service" ~/.config/systemd/user/
 ln -sf "$PWD/systemd/scout-send.service" ~/.config/systemd/user/
 ln -sf "$PWD/systemd/scout-send.timer" ~/.config/systemd/user/
+ln -sf "$PWD/systemd/scout-profile-update.service" ~/.config/systemd/user/
+ln -sf "$PWD/systemd/scout-profile-update.timer" ~/.config/systemd/user/
 systemctl --user daemon-reload
 
 # 先启动 listener，并完成飞书回调发布与真实校准
@@ -182,19 +194,27 @@ systemctl --user enable --now scout-feedback.service
 journalctl --user -u scout-feedback.service -f
 
 # 校准和一次人工 --send 验收通过后再启用 timer
-systemctl --user enable --now scout-send.timer
-systemctl --user list-timers scout-send.timer
+systemctl --user enable --now scout-send.timer scout-profile-update.timer
+systemctl --user list-timers scout-send.timer scout-profile-update.timer
 ```
 
-timer 使用 `Asia/Shanghai` 的 `10:00 / 12:30 / 21:00`，并设置
-`Persistent=true`。需要退出登录后仍常驻时，由系统管理员为该用户启用 linger。
+两个 timer 均使用 `Asia/Shanghai` 和 `Persistent=false`，不会在重启时补触发。
+新闻每天 **09:30、10:00、10:30、11:00、11:30、12:00、12:30** 检查；
+偏好每天 **19:00** 更新并通知变化。12:30 启动的任务允许运行至完成。
+需要退出登录后仍常驻时，由系统管理员为该用户启用 linger。
 
-本轮完成偏好 v2 重整与通知，并对 **2026-09-02** 做只读评价检查。发送 timer
-保持停用，listener 保持运行，不重发新闻、不改写旧列表、不推进其他日期。
-观察结束后如需恢复，重新执行
-上面的 timer 链接、`daemon-reload` 和 `enable --now` 命令。
-本期真实结果与未覆盖项见 [验收记录](docs/acceptance-2026-09-02.md)。
-偏好重整上线结果见 [偏好验收记录](docs/acceptance-profile-2026-09-06.md)。
+白天先检查 `issue_snapshots`：当天已有完整快照就不再请求 RSS，重启后仍有效。
+没有当天快照时抓取 RSS，并在模型调用前保存有效期内的完整日报；解析或保存失败
+不算抓取成功。合并 RSS 与本地快照后按日期从早到晚处理，保留原基线和去重规则。
+`max_age_days=3` 沿用原边界：仅跳过发布时间的北京日期早于“今天减 3 天”的日报。
+发送失败从 SQLite 重试未完成部分，较早一期未完成时暂停后续日期；全已完成时
+跳过模型与飞书阶段。12:30 后才发布的内容次日补抓。
+
+运行日志包括 RSS 请求起止、发布时间、返回期次、首次新闻快照保存时间、跳过
+抓取原因，以及偏好、评价缓存、正文、列表和整期完成状态。
+上线与自然场景观察见 [定时推送验收记录](docs/acceptance-schedule-2026-09-06.md)。
+历史记录见 [列表验收](docs/acceptance-2026-09-02.md) 和
+[偏好验收](docs/acceptance-profile-2026-09-06.md)。
 
 ## 工程检查与已知边界
 

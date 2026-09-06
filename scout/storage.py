@@ -918,7 +918,7 @@ class SQLiteStorage:
         )
 
     def feedback_evidence(
-        self, *, read_only: bool = False
+        self, *, read_only: bool = False, cutoff: int | None = None
     ) -> tuple[FeedbackEvidence, ...]:
         connection = self._open_for_read(read_only)
         if connection is None:
@@ -926,7 +926,11 @@ class SQLiteStorage:
         try:
             if not _table_exists(connection, "feedback_revisions"):
                 return ()
-            return _feedback_evidence(connection)
+            return (
+                _feedback_evidence(connection)
+                if cutoff is None
+                else _feedback_evidence(connection, cutoff=cutoff)
+            )
         finally:
             connection.close()
 
@@ -957,7 +961,7 @@ class SQLiteStorage:
 
     # -- Preference profiles ---------------------------------------------
 
-    def profile_snapshot(self) -> ProfileSnapshot:
+    def profile_snapshot(self, *, cutoff_at: str | None = None) -> ProfileSnapshot:
         """Read-only even on an unmigrated database; release before model I/O."""
 
         connection = self._open_for_read(True)
@@ -990,9 +994,12 @@ class SQLiteStorage:
                     """SELECT coalesce(max(revision_id), 0),
                               count(CASE WHEN revision_id > ? THEN 1 END),
                               count(CASE WHEN revision_id > ? THEN 1 END)
-                       FROM feedback_revisions""",
-                    (processed, full_cutoff),
+                       FROM feedback_revisions
+                       WHERE (? IS NULL OR created_at <= ?)""",
+                    (processed, full_cutoff, cutoff_at, cutoff_at),
                 ).fetchone()
+                # A manual update may already have consumed newer feedback.
+                cutoff = max(cutoff, processed)
                 feedback = _feedback_evidence(connection, cutoff=cutoff)
                 edited = (
                     connection.execute(

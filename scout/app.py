@@ -7,13 +7,18 @@ import json
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import IO
 
 from .collector import CollectionBatch, CollectionError, collect_source
 from .config import AppConfig, FeishuDeliveryConfig, SourceConfig
-from .datetime_utils import BEIJING_TIMEZONE, beijing_date, publication_date_bound
+from .datetime_utils import (
+    BEIJING_TIMEZONE,
+    beijing_date,
+    publication_date_bound,
+    to_beijing,
+)
 from .digest import normalize_articles, parse_issue
 from .issue_state import FilteredList, IssueState, ListMember
 from .llm import (
@@ -63,11 +68,15 @@ def run(
     notifier_factory: Callable[..., object] = FeishuNotifier,
     clock: Callable[[], datetime] = _now_beijing,
     issue_date: str | None = None,
+    scheduled: bool = False,
 ) -> int:
-    profile_modes = {"profile-rebuild", "profile-rebuild-preview"}
+    profile_modes = {"profile-update", "profile-rebuild", "profile-rebuild-preview"}
     if mode not in {"send", "dry-run", "calibrate", *profile_modes}:
         raise ValueError(f"unsupported mode: {mode}")
-    if mode in {"send", "calibrate", "profile-rebuild"} and feishu_delivery is None:
+    if (
+        mode in {"send", "calibrate", "profile-rebuild", "profile-update"}
+        and feishu_delivery is None
+    ):
         raise ValueError(f"Feishu delivery configuration is required in --{mode} mode")
     if mode in {"send", "dry-run", *profile_modes} and model_config is None:
         raise ValueError(f"model configuration is required in --{mode} mode")
@@ -76,15 +85,29 @@ def run(
             raise ValueError("--issue-date is only valid with --send or --dry-run")
         if date.fromisoformat(issue_date).isoformat() != issue_date:
             raise ValueError("--issue-date must use YYYY-MM-DD")
+    if scheduled and (mode != "send" or issue_date is not None):
+        raise ValueError("--scheduled requires --send and cannot use --issue-date")
+    started_at = to_beijing(clock())
+    if scheduled and not (570 <= started_at.hour * 60 + started_at.minute <= 750):
+        print(
+            f"Scheduled send skipped: outside 09:30–12:30 Beijing window ({started_at.isoformat()}).",
+            file=output,
+        )
+        return 0
+    if mode == "profile-update" and started_at.hour < 19:
+        print(
+            "Profile update skipped: before today's 19:00 Beijing cutoff.", file=output
+        )
+        return 0
     if (
-        mode in {"send", "profile-rebuild"}
+        mode in {"send", "profile-rebuild", "profile-update"}
         and feishu_delivery.receive_id_type != "chat_id"
     ):
         raise ValueError("personalized delivery requires a Feishu group chat_id")
 
     lock_context = (
         sender_lock(database_path)
-        if mode in {"send", "calibrate", "profile-rebuild"}
+        if mode in {"send", "calibrate", "profile-rebuild", "profile-update"}
         else nullcontext()
     )
     with lock_context:
@@ -100,6 +123,8 @@ def run(
                 notifier_factory=notifier_factory,
                 clock=clock,
                 issue_date=issue_date,
+                scheduled=scheduled,
+                started_at=started_at,
             )
         )
 
@@ -116,13 +141,27 @@ async def _run(
     notifier_factory: Callable[..., object],
     clock: Callable[[], datetime],
     issue_date: str | None,
+    scheduled: bool,
+    started_at: datetime,
 ) -> int:
     storage = SQLiteStorage(database_path)
     stats = RunStats()
-    run_date = beijing_date(clock())
+    run_date = beijing_date(started_at)
     read_only = mode in {"dry-run", "profile-rebuild-preview"}
     if not read_only:
         storage.initialize()
+    if scheduled:
+        return await _run_scheduled(
+            config,
+            storage=storage,
+            output=output,
+            run_date=run_date,
+            feishu_delivery=feishu_delivery,
+            model_config=model_config,
+            collector_factory=collector_factory,
+            notifier_factory=notifier_factory,
+            clock=clock,
+        )
 
     dated_items = {}
     if issue_date is not None:
@@ -143,7 +182,27 @@ async def _run(
     if model_config is not None:
         llm = PersonalizationLLM(model_config, resolve_api_key(model_config))
         try:
-            snapshot = storage.profile_snapshot()
+            cutoff_at = None
+            if mode == "profile-update":
+                cutoff_at = (
+                    started_at.replace(hour=19, minute=0, second=0, microsecond=0)
+                    .astimezone(UTC)
+                    .isoformat(timespec="milliseconds")
+                    .replace("+00:00", "Z")
+                )
+                print(
+                    f"Preference feedback cutoff: {cutoff_at}", file=output, flush=True
+                )
+            snapshot = storage.profile_snapshot(cutoff_at=cutoff_at)
+            if (
+                mode == "profile-update"
+                and snapshot.active is not None
+                and snapshot.active.notified
+                and preference_request(snapshot) is None
+            ):
+                print("No preference changes or pending notification.", file=output)
+                await llm.close()
+                return 0
             pending = snapshot.active is not None and not snapshot.active.notified
             if pending and not read_only:
                 assert notifier is not None and snapshot.active is not None
@@ -172,14 +231,14 @@ async def _run(
 
     try:
         if (
-            mode in {"send", "profile-rebuild"}
+            mode in {"send", "profile-rebuild", "profile-update"}
             and profile.version > 0
             and not profile.notified
         ):
             assert notifier is not None
             profile = _notify_profile(storage, notifier, profile, config, output)
 
-        if mode in {"profile-rebuild", "profile-rebuild-preview"}:
+        if mode in {"profile-update", "profile-rebuild", "profile-rebuild-preview"}:
             payload = profile.as_display_dict()
             if mode == "profile-rebuild-preview":
                 payload["entry_evidence"] = {
@@ -211,22 +270,36 @@ async def _run(
                     selected_date=issue_date,
                 )
                 continue
+            collection_succeeded = True
             try:
                 batch = _collect(source, config, collector_factory)
             except Exception as exc:  # noqa: BLE001 - isolate source collection
+                collection_succeeded = False
                 stats.failed += 1
                 print(
                     f"Collection failed: {source.name}: {type(exc).__name__}",
                     file=output,
                 )
-                continue
+                batch = CollectionBatch(())
             if batch.issues:
                 stats.failed += len(batch.issues)
                 print(
                     f"Collection warnings: {source.name}: {len(batch.issues)}",
                     file=output,
                 )
-            items = _unique_items(batch.items, stats)
+            saved = (
+                {
+                    item.dedupe_key: (day, item, articles)
+                    for day, item, articles in IssueState(storage).saved_issues(
+                        source.name
+                    )
+                }
+                if mode != "calibrate"
+                else {}
+            )
+            items = _unique_items(
+                (*batch.items, *(entry[1] for entry in saved.values())), stats
+            )
             items.sort(key=_issue_date, reverse=True)
             if mode == "calibrate":
                 if not items:
@@ -269,12 +342,12 @@ async def _run(
                             f"  - {item.published_at or '日期未知'} · {item.title}",
                             file=output,
                         )
-                elif not batch.issues:
+                elif collection_succeeded and not batch.issues:
                     storage.initialize_source_baseline(source.name, items)
                 continue
 
             try:
-                unseen = storage.unseen(items[:1], read_only=read_only)
+                unseen = storage.unseen(items, read_only=read_only)
             except Exception as exc:  # noqa: BLE001 - isolate source state
                 stats.failed += 1
                 print(
@@ -283,7 +356,7 @@ async def _run(
                 )
                 continue
             stats.skipped += len(items) - len(unseen)
-            selected = unseen[:1]
+            selected = sorted(unseen, key=_issue_date)
             if source.max_age_days is not None:
                 selected, stale = _partition_by_age(
                     selected,
@@ -317,6 +390,178 @@ async def _run(
 
     if not any((stats.sent, stats.previewed, stats.failed, stats.baseline)):
         print("No new items.", file=output)
+    _print_summary(stats, output)
+    return 1 if stats.failed else 0
+
+
+async def _run_scheduled(
+    config: AppConfig,
+    *,
+    storage: SQLiteStorage,
+    output: IO[str],
+    run_date: str,
+    feishu_delivery: FeishuDeliveryConfig,
+    model_config: ModelConfig,
+    collector_factory: Callable[..., object] | None,
+    notifier_factory: Callable[..., object],
+    clock: Callable[[], datetime],
+) -> int:
+    stats = RunStats()
+    state = IssueState(storage)
+    pending = []
+    # Finish all durable collection before constructing or calling the model.
+    for source in config.sources:
+        saved = {
+            day: (item, articles)
+            for day, item, articles in state.saved_issues(source.name)
+        }
+        today = saved.get(run_date)
+        if today is not None:
+            print(
+                f"RSS skipped: {source.name}: complete snapshot for {run_date}; "
+                f"first_saved_at={state.first_saved_at(today[0].dedupe_key)}",
+                file=output,
+                flush=True,
+            )
+        else:
+            print(
+                f"RSS fetch started: {source.name}: {to_beijing(clock()).isoformat()}",
+                file=output,
+                flush=True,
+            )
+            try:
+                batch = _collect(source, config, collector_factory)
+            except Exception as exc:  # noqa: BLE001 - retain local retry path
+                stats.failed += 1
+                print(
+                    f"RSS fetch failed: {source.name}: {exc}; continuing saved issues.",
+                    file=output,
+                    flush=True,
+                )
+            else:
+                print(
+                    f"RSS fetch completed: {source.name}: {to_beijing(clock()).isoformat()}; returned={len(batch.items)} warnings={len(batch.issues)}",
+                    file=output,
+                    flush=True,
+                )
+                stats.failed += len(batch.issues)
+                items = _unique_items(batch.items, stats)
+                valid_items = []
+                for item in items:
+                    try:
+                        day = _issue_date(item)
+                        print(
+                            f"RSS issue: date={day} published_at={item.published_at} key={item.dedupe_key}",
+                            file=output,
+                            flush=True,
+                        )
+                        valid_items.append(item)
+                        fresh = [item]
+                        if source.max_age_days is not None:
+                            fresh, _ = _partition_by_age(
+                                fresh,
+                                run_date=run_date,
+                                max_age_days=source.max_age_days,
+                            )
+                        if not fresh:
+                            stats.skipped += 1
+                            continue
+                        if day in saved:
+                            continue
+                        issue = parse_issue(item.content, page_url=item.url)
+                        articles = normalize_articles(issue, digest_key=item.dedupe_key)
+                        if not articles:
+                            raise ValueError("issue overview contains no entries")
+                        storage.save_article_snapshots(articles)
+                        state.save_issue(item, day, articles)
+                        saved[day] = (item, articles)
+                        print(
+                            f"Complete issue saved: {day}: articles={len(articles)} first_saved_at={state.first_saved_at(item.dedupe_key)}",
+                            file=output,
+                            flush=True,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - never mark a failed parse/save fetched
+                        stats.failed += 1
+                        print(
+                            f"Issue parse/save failed: {item.title}: {exc}",
+                            file=output,
+                            flush=True,
+                        )
+                if (
+                    not storage.is_source_initialized(source.name)
+                    and not batch.issues
+                    and valid_items
+                ):
+                    storage.initialize_source_baseline(source.name, valid_items)
+                    stats.baseline += len(valid_items)
+                    print(
+                        f"Baseline created: {source.name}: {len(valid_items)} issue(s)",
+                        file=output,
+                    )
+        for day, (item, articles) in saved.items():
+            fresh = [item]
+            if source.max_age_days is not None:
+                fresh, _ = _partition_by_age(
+                    fresh, run_date=run_date, max_age_days=source.max_age_days
+                )
+            if not fresh or not storage.unseen([item]):
+                stats.skipped += 1
+                continue
+            pending.append((day, source, item, articles))
+    pending.sort(key=lambda entry: (entry[0], entry[1].name))
+    if not pending:
+        print(
+            "No pending issues; preference, evaluation and Feishu stages skipped.",
+            file=output,
+        )
+        _print_summary(stats, output)
+        return 1 if stats.failed else 0
+    profile = storage.active_profile(read_only=True)
+    if profile is None or profile.version <= 0:
+        print(
+            "No saved preference profile; complete issue snapshots retained, sending deferred to after 19:00 update.",
+            file=output,
+        )
+        stats.failed += 1
+        _print_summary(stats, output)
+        return 1
+    feedback = storage.feedback_evidence(
+        read_only=True, cutoff=profile.last_feedback_revision_id
+    )
+    print(
+        f"Using saved preference v{profile.version}; feedback_cutoff={profile.last_feedback_revision_id}; pending_dates={','.join(entry[0] for entry in pending)}",
+        file=output,
+        flush=True,
+    )
+    llm = PersonalizationLLM(model_config, resolve_api_key(model_config))
+    try:
+        notifier = notifier_factory(feishu_delivery, config.network.timeout_seconds)
+        for day, source, item, articles in pending:
+            print(f"Processing saved issue: {day}", file=output, flush=True)
+            await _process_issue(
+                source,
+                item,
+                mode="send",
+                storage=storage,
+                notifier=notifier,
+                llm=llm,
+                profile=profile,
+                feedback=feedback,
+                config=config,
+                output=output,
+                stats=stats,
+                saved_articles=articles,
+                selected_date=day,
+            )
+            if storage.unseen([item]):
+                print(
+                    f"Issue incomplete: {day}; later dates deferred to preserve order.",
+                    file=output,
+                    flush=True,
+                )
+                break
+    finally:
+        await llm.close()
     _print_summary(stats, output)
     return 1 if stats.failed else 0
 
@@ -494,6 +739,13 @@ async def _process_issue(
                 evaluations[article.article_key] = cached
         try:
             if missing:
+                print(
+                    f"Evaluation started: {issue_date}: positions "
+                    f"{missing[0].position}-{missing[-1].position}; "
+                    f"profile=v{profile.version} cached={len(batch) - len(missing)}",
+                    file=output,
+                    flush=True,
+                )
                 generated = await llm.evaluate_articles(
                     missing, profile, recent_likes, recent_dislikes
                 )
@@ -504,6 +756,17 @@ async def _process_issue(
                     storage.save_evaluations(
                         missing, generated, profile_version=profile.version
                     )
+                print(
+                    f"Evaluation completed: {issue_date}: {len(generated)} entries",
+                    file=output,
+                    flush=True,
+                )
+            else:
+                print(
+                    f"Evaluation cache reused: {issue_date}: {len(batch)} entries",
+                    file=output,
+                    flush=True,
+                )
         except Exception as exc:  # noqa: BLE001 - isolate one model batch
             stats.failed += len(batch)
             print(
@@ -555,6 +818,11 @@ async def _process_issue(
                     evaluation=evaluation,
                 )
                 stats.sent += 1
+                print(
+                    f"Article sent: {issue_date} #{article.position}",
+                    file=output,
+                    flush=True,
+                )
             except Exception as exc:  # noqa: BLE001 - isolate one card delivery
                 stats.failed += 1
                 delivery_blocked = True
@@ -646,6 +914,7 @@ async def _process_issue(
     ):
         try:
             storage.record_delivered([item])
+            print(f"Issue completed: {issue_date}", file=output, flush=True)
         except Exception as exc:  # noqa: BLE001 - isolate completion accounting
             stats.failed += 1
             print(

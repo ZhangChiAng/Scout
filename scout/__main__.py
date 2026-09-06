@@ -60,6 +60,11 @@ def main(argv: list[str] | None = None) -> int:
         help="preview a full profile rebuild with the real model and zero SQLite writes",
     )
     mode.add_argument(
+        "--profile-update",
+        action="store_true",
+        help="apply feedback saved by 19:00 Beijing time and notify profile changes",
+    )
+    mode.add_argument(
         "--profile-rebuild",
         action="store_true",
         help="rebuild and activate preferences, notify Feishu, without sending news",
@@ -72,6 +77,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--config", default="config.toml", help="TOML config path")
     parser.add_argument(
+        "--scheduled",
+        action="store_true",
+        help="use the daytime scheduled send workflow",
+    )
+    parser.add_argument(
         "--issue-date",
         metavar="YYYY-MM-DD",
         help="select exactly one issue for --send/--dry-run, ignoring age and baseline",
@@ -80,6 +90,8 @@ def main(argv: list[str] | None = None) -> int:
         "--models-config", default="models.toml", help="model TOML config path"
     )
     args = parser.parse_args(argv)
+    if args.scheduled and (not args.send or args.issue_date is not None):
+        parser.error("--scheduled requires --send and cannot use --issue-date")
     if args.issue_date is not None:
         if not (args.send or args.dry_run):
             parser.error("--issue-date is only valid with --send or --dry-run")
@@ -152,6 +164,8 @@ def main(argv: list[str] | None = None) -> int:
         selected_mode = "send" if args.send else "dry-run"
         if args.profile_rebuild:
             selected_mode = "profile-rebuild"
+        elif args.profile_update:
+            selected_mode = "profile-update"
         elif args.profile_rebuild_preview:
             selected_mode = "profile-rebuild-preview"
         model_config = load_required_model_config(args.models_config)
@@ -161,10 +175,13 @@ def main(argv: list[str] | None = None) -> int:
             database_path=database_path,
             output=sys.stdout,
             feishu_delivery=(
-                resolve_feishu_delivery() if args.send or args.profile_rebuild else None
+                resolve_feishu_delivery()
+                if args.send or args.profile_rebuild or args.profile_update
+                else None
             ),
             model_config=model_config,
             issue_date=args.issue_date,
+            scheduled=args.scheduled,
         )
     except KeyboardInterrupt:
         print("Interrupted.", file=sys.stderr)

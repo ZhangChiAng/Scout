@@ -1,5 +1,5 @@
 [Unit]
-Description=Scout personalized Juya article delivery
+Description=Scout daily preference update and Feishu change notification
 After=network-online.target
 Wants=network-online.target
 
@@ -8,4 +8,4 @@ Type=oneshot
 WorkingDirectory=%h/workspace/signal-feed
 EnvironmentFile=%h/workspace/signal-feed/.env
 Environment=PYTHONUNBUFFERED=1
-ExecStart=%h/.local/bin/uv run --locked python -m scout --send --scheduled
+ExecStart=%h/.local/bin/uv run --locked python -m scout --profile-update

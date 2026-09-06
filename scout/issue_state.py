@@ -195,6 +195,42 @@ class IssueState:
             )
             return item, articles
 
+    def saved_issues(
+        self, source: str
+    ) -> tuple[tuple[str, NewsItem, tuple[DigestArticle, ...]], ...]:
+        """Read only committed full manifests; partial article rows are insufficient."""
+        if not self.storage.path.exists():
+            return ()
+        with closing(self.storage._connect_read_only()) as conn:
+            if not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='issue_snapshots'"
+            ).fetchone():
+                return ()
+            rows = conn.execute(
+                "SELECT issue_date, item_json, articles_json FROM issue_snapshots "
+                "WHERE source=? ORDER BY issue_date",
+                (source,),
+            ).fetchall()
+        return tuple(
+            (
+                day,
+                NewsItem(**json.loads(item)),
+                tuple(_article(a) for a in json.loads(articles)),
+            )
+            for day, item, articles in rows
+            if json.loads(articles)
+        )
+
+    def first_saved_at(self, digest_key: str) -> str:
+        with closing(self.storage._connect_read_only()) as conn:
+            return (
+                conn.execute(
+                    "SELECT min(captured_at) FROM article_snapshots WHERE digest_key=?",
+                    (digest_key,),
+                ).fetchone()[0]
+                or "unknown"
+            )
+
     def presented(self, article_key: str) -> bool:
         if self.storage.is_article_delivered(article_key, read_only=True):
             return True
