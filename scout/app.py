@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import json
-from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from contextlib import nullcontext
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import IO
@@ -19,28 +18,28 @@ from .digest import normalize_articles, parse_issue
 from .issue_state import FilteredList, IssueState, ListMember
 from .llm import (
     EVALUATION_BATCH_SIZE,
+    MODEL_REASONING_EFFORT,
     LLMError,
     ModelConfig,
     PersonalizationLLM,
+    preference_request,
     resolve_api_key,
 )
+from .locking import sender_lock
 from .model import DigestArticle, NewsItem, PersonalizedEvaluation, PreferenceProfile
 from .notifier import (
     FeishuNotifier,
+    NotificationError,
     build_article_card,
     build_filtered_list_card,
     build_profile_card,
     partition_filtered_members,
 )
-from .storage import SQLiteStorage
+from .storage import FeedbackEvidence, ProfileSnapshot, SQLiteStorage
 
 
 def _now_beijing() -> datetime:
     return datetime.now(BEIJING_TIMEZONE)
-
-
-class RunLockedError(RuntimeError):
-    """Raised when another sender or calibration process owns the lock."""
 
 
 @dataclass(slots=True)
@@ -65,22 +64,28 @@ def run(
     clock: Callable[[], datetime] = _now_beijing,
     issue_date: str | None = None,
 ) -> int:
-    if mode not in {"send", "dry-run", "calibrate"}:
+    profile_modes = {"profile-rebuild", "profile-rebuild-preview"}
+    if mode not in {"send", "dry-run", "calibrate", *profile_modes}:
         raise ValueError(f"unsupported mode: {mode}")
-    if mode in {"send", "calibrate"} and feishu_delivery is None:
+    if mode in {"send", "calibrate", "profile-rebuild"} and feishu_delivery is None:
         raise ValueError(f"Feishu delivery configuration is required in --{mode} mode")
-    if mode in {"send", "dry-run"} and model_config is None:
+    if mode in {"send", "dry-run", *profile_modes} and model_config is None:
         raise ValueError(f"model configuration is required in --{mode} mode")
     if issue_date is not None:
         if mode not in {"send", "dry-run"}:
             raise ValueError("--issue-date is only valid with --send or --dry-run")
         if date.fromisoformat(issue_date).isoformat() != issue_date:
             raise ValueError("--issue-date must use YYYY-MM-DD")
-    if mode == "send" and feishu_delivery.receive_id_type != "chat_id":
+    if (
+        mode in {"send", "profile-rebuild"}
+        and feishu_delivery.receive_id_type != "chat_id"
+    ):
         raise ValueError("personalized delivery requires a Feishu group chat_id")
 
     lock_context = (
-        _sender_lock(database_path) if mode in {"send", "calibrate"} else _null_lock()
+        sender_lock(database_path)
+        if mode in {"send", "calibrate", "profile-rebuild"}
+        else nullcontext()
     )
     with lock_context:
         return asyncio.run(
@@ -115,7 +120,7 @@ async def _run(
     storage = SQLiteStorage(database_path)
     stats = RunStats()
     run_date = beijing_date(clock())
-    read_only = mode == "dry-run"
+    read_only = mode in {"dry-run", "profile-rebuild-preview"}
     if not read_only:
         storage.initialize()
 
@@ -134,41 +139,58 @@ async def _run(
 
     llm = None
     profile = PreferenceProfile.empty()
+    snapshot = ProfileSnapshot()
     if model_config is not None:
         llm = PersonalizationLLM(model_config, resolve_api_key(model_config))
         try:
-            profile = await _prepare_profile(storage, llm, mode=mode, output=output)
+            snapshot = storage.profile_snapshot()
+            pending = snapshot.active is not None and not snapshot.active.notified
+            if pending and not read_only:
+                assert notifier is not None and snapshot.active is not None
+                notified = _notify_profile(
+                    storage, notifier, snapshot.active, config, output
+                )
+                snapshot = replace(snapshot, active=notified)
+            if (
+                mode == "profile-rebuild"
+                and pending
+                and not snapshot.new_revision_count
+            ):
+                assert snapshot.active is not None
+                profile = snapshot.active
+                print(
+                    "Pending profile notification retried; no new model request.",
+                    file=output,
+                )
+            else:
+                profile = await _prepare_profile(
+                    storage, llm, mode=mode, output=output, snapshot=snapshot
+                )
         except Exception:
             await llm.close()
             raise
 
     try:
-        if mode == "send" and profile.version > 0 and not profile.notified:
+        if (
+            mode in {"send", "profile-rebuild"}
+            and profile.version > 0
+            and not profile.notified
+        ):
             assert notifier is not None
-            try:
-                card = build_profile_card(
-                    profile, max_payload_bytes=config.feishu.max_payload_bytes
-                )
-                sent = notifier.send_card(card)  # type: ignore[attr-defined]
-                storage.mark_profile_notified(
-                    profile.version,
-                    message_id=sent.message_id,
-                    chat_id=sent.chat_id,
-                )
-                profile = storage.active_profile(read_only=True) or profile
-                print(
-                    f"Preference profile v{profile.version} notification sent.",
-                    file=output,
-                )
-            except Exception as exc:  # noqa: BLE001 - isolate notification boundary
-                stats.failed += 1
-                print(
-                    f"Profile notification failed: {type(exc).__name__}; "
-                    "article delivery is deferred.",
-                    file=output,
-                )
-                _print_summary(stats, output)
-                return 1
+            profile = _notify_profile(storage, notifier, profile, config, output)
+
+        if mode in {"profile-rebuild", "profile-rebuild-preview"}:
+            payload = profile.as_display_dict()
+            if mode == "profile-rebuild-preview":
+                payload["entry_evidence"] = {
+                    entry.entry_id: list(entry.evidence_ids)
+                    for entry in profile.entries
+                }
+            print(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                file=output,
+            )
+            return 0
 
         for source in config.sources:
             if issue_date is not None:
@@ -181,6 +203,7 @@ async def _run(
                     notifier=notifier,
                     llm=llm,
                     profile=profile,
+                    feedback=snapshot.feedback,
                     config=config,
                     output=output,
                     stats=stats,
@@ -226,6 +249,7 @@ async def _run(
                     notifier=notifier,
                     llm=None,
                     profile=profile,
+                    feedback=snapshot.feedback,
                     config=config,
                     output=output,
                     stats=stats,
@@ -282,6 +306,7 @@ async def _run(
                     notifier=notifier,
                     llm=llm,
                     profile=profile,
+                    feedback=snapshot.feedback,
                     config=config,
                     output=output,
                     stats=stats,
@@ -296,48 +321,80 @@ async def _run(
     return 1 if stats.failed else 0
 
 
+def _notify_profile(
+    storage: SQLiteStorage,
+    notifier: object,
+    profile: PreferenceProfile,
+    config: AppConfig,
+    output: IO[str],
+) -> PreferenceProfile:
+    try:
+        card = build_profile_card(
+            profile, max_payload_bytes=config.feishu.max_payload_bytes
+        )
+        sent = notifier.send_card(card)  # type: ignore[attr-defined]
+        storage.mark_profile_notified(
+            profile.version, message_id=sent.message_id, chat_id=sent.chat_id
+        )
+    except Exception as exc:
+        raise NotificationError(
+            f"Profile v{profile.version} notification failed: {type(exc).__name__}; "
+            "pending notification retained, article delivery is deferred."
+        ) from exc
+    print(
+        f"Preference profile v{profile.version} notification sent.",
+        file=output,
+        flush=True,
+    )
+    return replace(profile, notified=True)
+
+
 async def _prepare_profile(
     storage: SQLiteStorage,
     llm: PersonalizationLLM,
     *,
     mode: str,
     output: IO[str],
+    snapshot: ProfileSnapshot,
 ) -> PreferenceProfile:
-    read_only = mode == "dry-run"
-    active = storage.active_profile(read_only=read_only)
-    evidence = storage.feedback_evidence(read_only=read_only)
-    latest_revision = storage.max_feedback_revision_id(read_only=read_only)
-    likes = sum(item.sentiment == "like" for item in evidence)
-    dislikes = sum(item.sentiment == "dislike" for item in evidence)
-    if active is None:
-        update_needed = likes >= 2 and dislikes >= 2
-    else:
-        update_needed = latest_revision > active.last_feedback_revision_id
-    if not update_needed:
-        return active or PreferenceProfile.empty()
-
-    next_version = (active.version if active else 0) + 1
+    read_only = mode in {"dry-run", "profile-rebuild-preview"}
+    request = preference_request(
+        snapshot, force_rebuild=mode in {"profile-rebuild", "profile-rebuild-preview"}
+    )
+    if request is None:
+        return snapshot.active or PreferenceProfile.empty()
+    print(
+        f"Preference update: mode={request.mode} trigger={request.trigger} "
+        f"feedback_count={len(request.evidence)} "
+        f"new_revision_count={snapshot.new_revision_count} "
+        f"revisions_since_rebuild={snapshot.revisions_since_rebuild} "
+        f"cutoff_revision_id={snapshot.cutoff_revision_id} "
+        f"reasoning_effort={MODEL_REASONING_EFFORT} "
+        f"input_chars={request.input_chars} (characters, not tokens).",
+        file=output,
+        flush=True,
+    )
     try:
-        generated = await llm.summarize_preferences(
-            evidence,
-            active,
-            next_version=next_version,
-            last_feedback_revision_id=latest_revision,
-        )
+        generated = await llm.summarize_preferences(request)
     except Exception as exc:
         raise LLMError(
-            "preference update failed; the previous profile will not be used "
-            f"for this round ({type(exc).__name__})"
+            f"preference update failed; feedback progress unchanged: {exc}"
         ) from exc
+    print(
+        f"Preference result: rule_count={generated.rule_count} "
+        f"entry_count={len(generated.entries)} "
+        f"readable_chars={generated.as_display_dict()['readable_chars']}.",
+        file=output,
+        flush=True,
+    )
     if read_only:
         print(
-            f"Temporary preference profile v{generated.version} generated "
-            "for dry-run; SQLite unchanged.",
+            f"Temporary preference profile v{generated.version} generated; SQLite unchanged.",
             file=output,
         )
         return generated
-    saved = storage.save_profile(generated)
-    print(f"Preference profile v{saved.version} activated.", file=output)
+    saved = storage.save_profile(generated, snapshot=snapshot)
+    print(f"Preference profile v{saved.version} activated.", file=output, flush=True)
     return saved
 
 
@@ -350,6 +407,7 @@ async def _process_issue(
     notifier: object | None,
     llm: PersonalizationLLM | None,
     profile: PreferenceProfile,
+    feedback: Sequence[FeedbackEvidence],
     config: AppConfig,
     output: IO[str],
     stats: RunStats,
@@ -416,8 +474,10 @@ async def _process_issue(
     ]
     stats.skipped += len(articles) - len(pending)
     assert llm is not None
-    recent_likes = storage.recent_feedback("like", read_only=mode == "dry-run")
-    recent_dislikes = storage.recent_feedback("dislike", read_only=mode == "dry-run")
+    recent_likes = tuple(f for f in reversed(feedback) if f.sentiment == "like")[:4]
+    recent_dislikes = tuple(f for f in reversed(feedback) if f.sentiment == "dislike")[
+        :4
+    ]
     rejected: list[ListMember] = []
     delivery_blocked = False
     for start in range(0, len(pending), EVALUATION_BATCH_SIZE):
@@ -759,24 +819,3 @@ def _print_summary(stats: RunStats, output: IO[str]) -> None:
         f"skipped={stats.skipped} previewed={stats.previewed}",
         file=output,
     )
-
-
-@contextmanager
-def _sender_lock(database_path: str | Path) -> Iterator[None]:
-    path = Path(database_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = path.with_name(f"{path.name}.sender.lock")
-    with lock_path.open("a+b") as file:
-        try:
-            fcntl.flock(file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise RunLockedError("another Scout sender is already running") from exc
-        try:
-            yield
-        finally:
-            fcntl.flock(file.fileno(), fcntl.LOCK_UN)
-
-
-@contextmanager
-def _null_lock() -> Iterator[None]:
-    yield

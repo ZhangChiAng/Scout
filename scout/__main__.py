@@ -10,7 +10,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from .app import RunLockedError, run
+from .app import run
 from .collector import CollectionError
 from .config import (
     ConfigError,
@@ -20,6 +20,7 @@ from .config import (
 )
 from .feedback import FeedbackListenerError, listen_feedback
 from .llm import LLMError, load_required_model_config
+from .locking import RunLockedError
 from .notifier import NotificationError
 from .storage import SQLiteStorage, StorageError
 
@@ -52,6 +53,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     mode.add_argument(
         "--profile-history", action="store_true", help="show preference profile history"
+    )
+    mode.add_argument(
+        "--profile-rebuild-preview",
+        action="store_true",
+        help="preview a full profile rebuild with the real model and zero SQLite writes",
+    )
+    mode.add_argument(
+        "--profile-rebuild",
+        action="store_true",
+        help="rebuild and activate preferences, notify Feishu, without sending news",
     )
     mode.add_argument(
         "--profile-rollback",
@@ -96,14 +107,9 @@ def main(argv: list[str] | None = None) -> int:
             if profile is None:
                 print("No active preference profile.")
             else:
-                payload = profile.as_prompt_dict()
-                payload.update(
-                    {
-                        "last_feedback_revision_id": profile.last_feedback_revision_id,
-                        "notified": profile.notified,
-                    }
+                print(
+                    json.dumps(profile.as_display_dict(), ensure_ascii=False, indent=2)
                 )
-                print(json.dumps(payload, ensure_ascii=False, indent=2))
             return 0
         if args.profile_history:
             history = SQLiteStorage(database_path).profile_history(read_only=True)
@@ -144,13 +150,19 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         selected_mode = "send" if args.send else "dry-run"
+        if args.profile_rebuild:
+            selected_mode = "profile-rebuild"
+        elif args.profile_rebuild_preview:
+            selected_mode = "profile-rebuild-preview"
         model_config = load_required_model_config(args.models_config)
         return run(
             config,
             mode=selected_mode,
             database_path=database_path,
             output=sys.stdout,
-            feishu_delivery=resolve_feishu_delivery() if args.send else None,
+            feishu_delivery=(
+                resolve_feishu_delivery() if args.send or args.profile_rebuild else None
+            ),
             model_config=model_config,
             issue_date=args.issue_date,
         )

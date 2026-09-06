@@ -2,7 +2,7 @@
 
 import hashlib
 import json
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 _TRACKING_QUERY_NAMES = {
@@ -128,19 +128,46 @@ class PersonalizedEvaluation:
         object.__setattr__(self, "reason", reason)
 
 
+PROFILE_FORMAT_VERSION = 2
+PROFILE_CATEGORIES = ("rules", "entities", "interests", "questions")
+PROFILE_LABELS = ("判断规则", "具体对象", "专题兴趣", "重要疑问")
+
+
+@dataclass(frozen=True, slots=True)
+class PreferenceEntry:
+    entry_id: str
+    category: str
+    text: str
+    evidence_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PreferenceUpdate:
+    mode: str
+    trigger: str
+    feedback_count: int
+    revision_count: int
+    revisions_since_rebuild: int
+    last_full_feedback_revision_id: int
+    input_chars: int
+
+
 @dataclass(frozen=True, slots=True)
 class PreferenceProfile:
     """Versioned, evidence-backed preferences for Scout's sole owner."""
 
     version: int
-    like_rules: tuple[str, ...]
-    dislike_rules: tuple[str, ...]
-    tradeoffs: tuple[str, ...]
-    uncertainties: tuple[str, ...]
-    evidence_ids: tuple[int, ...]
-    change_summary: str
+    like_rules: tuple[str, ...] = ()
+    dislike_rules: tuple[str, ...] = ()
+    tradeoffs: tuple[str, ...] = ()
+    uncertainties: tuple[str, ...] = ()
+    evidence_ids: tuple[int, ...] = ()
+    change_summary: str = ""
     last_feedback_revision_id: int = 0
     notified: bool = False
+    format_version: int = 1
+    entries: tuple[PreferenceEntry, ...] = ()
+    update: PreferenceUpdate | None = None
 
     @classmethod
     def empty(cls) -> PreferenceProfile:
@@ -155,15 +182,81 @@ class PreferenceProfile:
         )
 
     def as_prompt_dict(self) -> dict[str, object]:
+        """Only readable preferences; never historical evidence or change notes."""
+
+        if self.format_version == PROFILE_FORMAT_VERSION:
+            return {
+                "format_version": self.format_version,
+                "version": self.version,
+                **{
+                    category: [e.text for e in self.entries if e.category == category]
+                    for category in PROFILE_CATEGORIES
+                },
+            }
         return {
+            "format_version": self.format_version,
             "version": self.version,
             "like_rules": list(self.like_rules),
             "dislike_rules": list(self.dislike_rules),
             "tradeoffs": list(self.tradeoffs),
             "uncertainties": list(self.uncertainties),
-            "evidence_ids": list(self.evidence_ids),
-            "change_summary": self.change_summary,
         }
+
+    def as_entry_dict(self) -> dict[str, object]:
+        """Compact identified entries for incremental input and persisted content."""
+
+        if self.format_version != PROFILE_FORMAT_VERSION:
+            return self.as_prompt_dict()
+        return {
+            "format_version": self.format_version,
+            "version": self.version,
+            **{
+                category: [
+                    {"id": e.entry_id, "text": e.text}
+                    for e in self.entries
+                    if e.category == category
+                ]
+                for category in PROFILE_CATEGORIES
+            },
+        }
+
+    def as_display_dict(self) -> dict[str, object]:
+        return {
+            **self.as_entry_dict(),
+            "change_summary": self.change_summary,
+            "last_feedback_revision_id": self.last_feedback_revision_id,
+            "notified": self.notified,
+            "evidence_count": len(self.evidence_ids),
+            "rule_count": self.rule_count,
+            "entry_count": sum(len(values) for _, values in self.readable_sections()),
+            "readable_chars": len(
+                json.dumps(
+                    self.as_prompt_dict(), ensure_ascii=False, separators=(",", ":")
+                )
+            ),
+            "update": asdict(self.update) if self.update else None,
+        }
+
+    @property
+    def rule_count(self) -> int:
+        if self.format_version == PROFILE_FORMAT_VERSION:
+            return sum(e.category == "rules" for e in self.entries)
+        return len(self.like_rules) + len(self.dislike_rules) + len(self.tradeoffs)
+
+    def readable_sections(self) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        if self.format_version == PROFILE_FORMAT_VERSION:
+            return tuple(
+                (label, tuple(e.text for e in self.entries if e.category == category))
+                for category, label in zip(
+                    PROFILE_CATEGORIES, PROFILE_LABELS, strict=True
+                )
+            )
+        return (
+            ("喜欢规则", self.like_rules),
+            ("不喜欢规则", self.dislike_rules),
+            ("权衡项", self.tradeoffs),
+            ("不确定项", self.uncertainties),
+        )
 
 
 def make_article_key(

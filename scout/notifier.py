@@ -247,10 +247,10 @@ def build_profile_card(
             },
         },
         "elements": [
-            _markdown(rules("喜欢规则", profile.like_rules)),
-            _markdown(rules("不喜欢规则", profile.dislike_rules)),
-            _markdown(rules("权衡项", profile.tradeoffs)),
-            _markdown(rules("不确定项", profile.uncertainties)),
+            *[
+                _markdown(rules(label, values))
+                for label, values in profile.readable_sections()
+            ],
             {"tag": "hr"},
             _markdown(f"**版本变化**\n{_md_escape(profile.change_summary)}"),
         ],

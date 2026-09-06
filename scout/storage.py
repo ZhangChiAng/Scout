@@ -8,11 +8,16 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .issue_state import ISSUE_SCHEMAS
+from .locking import sender_lock
 from .model import (
+    PROFILE_CATEGORIES,
+    PROFILE_FORMAT_VERSION,
     DigestArticle,
     NewsItem,
     PersonalizedEvaluation,
+    PreferenceEntry,
     PreferenceProfile,
+    PreferenceUpdate,
     canonicalize_url,
 )
 
@@ -149,6 +154,36 @@ CREATE TABLE IF NOT EXISTS evaluation_cache (
 )
 """
 
+PREFERENCE_DETAIL_SCHEMAS = (
+    """CREATE TABLE IF NOT EXISTS preference_entries (
+        profile_version INTEGER NOT NULL REFERENCES preference_profiles(version),
+        entry_id TEXT NOT NULL,
+        category TEXT NOT NULL CHECK (category IN ('rules', 'entities', 'interests', 'questions')),
+        position INTEGER NOT NULL,
+        text TEXT NOT NULL,
+        PRIMARY KEY (profile_version, entry_id),
+        UNIQUE (profile_version, category, position)
+    )""",
+    """CREATE TABLE IF NOT EXISTS preference_entry_evidence (
+        profile_version INTEGER NOT NULL,
+        entry_id TEXT NOT NULL,
+        feedback_revision_id INTEGER NOT NULL REFERENCES feedback_revisions(revision_id),
+        PRIMARY KEY (profile_version, entry_id, feedback_revision_id),
+        FOREIGN KEY (profile_version, entry_id)
+            REFERENCES preference_entries(profile_version, entry_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS preference_updates (
+        profile_version INTEGER PRIMARY KEY REFERENCES preference_profiles(version),
+        mode TEXT NOT NULL CHECK (mode IN ('incremental', 'rebuild', 'rollback')),
+        trigger TEXT NOT NULL,
+        feedback_count INTEGER NOT NULL,
+        revision_count INTEGER NOT NULL,
+        revisions_since_rebuild INTEGER NOT NULL,
+        last_full_feedback_revision_id INTEGER NOT NULL,
+        input_chars INTEGER NOT NULL
+    )""",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class CardDelivery:
@@ -184,6 +219,25 @@ class FeedbackWrite:
     reason: str
 
 
+@dataclass(frozen=True, slots=True)
+class ProfileSnapshot:
+    """One closed read transaction fixes every input before calling the model."""
+
+    active: PreferenceProfile | None = None
+    feedback: tuple[FeedbackEvidence, ...] = ()
+    cutoff_revision_id: int = 0
+    next_version: int = 1
+    new_revision_count: int = 0
+    revisions_since_rebuild: int = 0
+    edited_processed_feedback: bool = False
+    rolled_back: bool = False
+
+    @property
+    def new_feedback(self) -> tuple[FeedbackEvidence, ...]:
+        processed = self.active.last_feedback_revision_id if self.active else 0
+        return tuple(f for f in self.feedback if f.revision_id > processed)
+
+
 class FeedbackError(ValueError):
     """Raised when a callback is invalid or belongs to a different owner."""
 
@@ -208,6 +262,8 @@ class SQLiteStorage:
                 connection.execute(FEEDBACK_REVISIONS_SCHEMA)
                 connection.execute(OWNER_SCHEMA)
                 connection.execute(PREFERENCE_PROFILES_SCHEMA)
+                for schema in PREFERENCE_DETAIL_SCHEMAS:
+                    connection.execute(schema)
                 connection.execute(EVALUATION_CACHE_SCHEMA)
                 for schema in ISSUE_SCHEMAS:
                     connection.execute(schema)
@@ -870,22 +926,7 @@ class SQLiteStorage:
         try:
             if not _table_exists(connection, "feedback_revisions"):
                 return ()
-            rows = connection.execute(
-                """
-                SELECT f.revision_id, f.delivery_id, s.article_key, f.sentiment,
-                       f.reason, s.title, s.category, s.summary, s.detail,
-                       f.created_at
-                FROM feedback_revisions f
-                JOIN card_deliveries d ON d.delivery_id = f.delivery_id
-                JOIN article_snapshots s ON s.snapshot_id = d.snapshot_id
-                WHERE f.revision_id = (
-                    SELECT max(f2.revision_id) FROM feedback_revisions f2
-                    WHERE f2.delivery_id = f.delivery_id
-                )
-                ORDER BY f.revision_id
-                """
-            ).fetchall()
-            return tuple(FeedbackEvidence(*row) for row in rows)
+            return _feedback_evidence(connection)
         finally:
             connection.close()
 
@@ -916,21 +957,76 @@ class SQLiteStorage:
 
     # -- Preference profiles ---------------------------------------------
 
+    def profile_snapshot(self) -> ProfileSnapshot:
+        """Read-only even on an unmigrated database; release before model I/O."""
+
+        connection = self._open_for_read(True)
+        if connection is None:
+            return ProfileSnapshot()
+        try:
+            connection.execute("BEGIN")
+            active = _read_profile(connection)
+            processed = active.last_feedback_revision_id if active else 0
+            full_cutoff = (
+                active.update.last_full_feedback_revision_id
+                if active and active.update
+                else 0
+            )
+            next_version = 1
+            rolled_back = False
+            if _table_exists(connection, "preference_profiles"):
+                next_version = connection.execute(
+                    "SELECT coalesce(max(version), 0) + 1 FROM preference_profiles"
+                ).fetchone()[0]
+                source = connection.execute(
+                    "SELECT source FROM preference_profiles WHERE active = 1"
+                ).fetchone()
+                rolled_back = source is not None and source[0] == "rollback"
+            cutoff = new_count = since_full = 0
+            edited = False
+            feedback = ()
+            if _table_exists(connection, "feedback_revisions"):
+                cutoff, new_count, since_full = connection.execute(
+                    """SELECT coalesce(max(revision_id), 0),
+                              count(CASE WHEN revision_id > ? THEN 1 END),
+                              count(CASE WHEN revision_id > ? THEN 1 END)
+                       FROM feedback_revisions""",
+                    (processed, full_cutoff),
+                ).fetchone()
+                feedback = _feedback_evidence(connection, cutoff=cutoff)
+                edited = (
+                    connection.execute(
+                        """SELECT 1 FROM feedback_revisions new
+                       WHERE new.revision_id > ? AND new.revision_id <= ?
+                       AND EXISTS (
+                           SELECT 1 FROM feedback_revisions old
+                           WHERE old.delivery_id = new.delivery_id
+                             AND old.revision_id <= ?
+                       ) LIMIT 1""",
+                        (processed, cutoff, processed),
+                    ).fetchone()
+                    is not None
+                )
+            return ProfileSnapshot(
+                active=active,
+                feedback=feedback,
+                cutoff_revision_id=cutoff,
+                next_version=next_version,
+                new_revision_count=new_count,
+                revisions_since_rebuild=since_full,
+                edited_processed_feedback=edited,
+                rolled_back=rolled_back,
+            )
+        finally:
+            connection.close()
+
     def active_profile(self, *, read_only: bool = False) -> PreferenceProfile | None:
         connection = self._open_for_read(read_only)
         if connection is None:
             return None
         try:
-            if not _table_exists(connection, "preference_profiles"):
-                return None
-            row = connection.execute(
-                """
-                SELECT version, profile_json, evidence_ids_json, change_summary,
-                       last_feedback_revision_id, notified_at
-                FROM preference_profiles WHERE active = 1
-                """
-            ).fetchone()
-            return _preference_profile(row) if row is not None else None
+            connection.execute("BEGIN")
+            return _read_profile(connection)
         finally:
             connection.close()
 
@@ -941,6 +1037,7 @@ class SQLiteStorage:
         if connection is None:
             return ()
         try:
+            connection.execute("BEGIN")
             if not _table_exists(connection, "preference_profiles"):
                 return ()
             rows = connection.execute(
@@ -962,16 +1059,27 @@ class SQLiteStorage:
                 "notified_at",
                 "created_at",
             )
-            return tuple(dict(zip(keys, row, strict=True)) for row in rows)
+            result = []
+            for row in rows:
+                profile = _read_profile(connection, version=row[0])
+                assert profile is not None
+                result.append(
+                    {
+                        **dict(zip(keys, row, strict=True)),
+                        **profile.as_display_dict(),
+                    }
+                )
+            return tuple(result)
         finally:
             connection.close()
 
     def save_profile(
-        self, profile: PreferenceProfile, *, source: str = "llm"
+        self, profile: PreferenceProfile, *, snapshot: ProfileSnapshot
     ) -> PreferenceProfile:
-        if source not in {"llm", "rollback"}:
-            raise ValueError("invalid profile source")
-        self.initialize()
+        if profile.format_version != PROFILE_FORMAT_VERSION or profile.update is None:
+            raise StorageError(
+                "generated profile requires format v2 and update progress"
+            )
         with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
@@ -984,25 +1092,27 @@ class SQLiteStorage:
                         "SELECT coalesce(max(version), 0) + 1 FROM preference_profiles"
                     ).fetchone()[0]
                 )
-                connection.execute("UPDATE preference_profiles SET active = 0")
+                expected_parent = snapshot.active.version if snapshot.active else None
+                if (
+                    parent_version != expected_parent
+                    or version != snapshot.next_version
+                ):
+                    raise StorageError("active preference changed during model request")
+                if profile.last_feedback_revision_id != snapshot.cutoff_revision_id:
+                    raise StorageError(
+                        "generated profile does not match feedback cutoff"
+                    )
+                valid_ids = {
+                    row[0]
+                    for row in connection.execute(
+                        """SELECT max(revision_id) FROM feedback_revisions
+                           WHERE revision_id <= ? GROUP BY delivery_id""",
+                        (snapshot.cutoff_revision_id,),
+                    )
+                }
+                _validate_profile_evidence(profile, valid_ids)
                 saved = replace(profile, version=version, notified=False)
-                connection.execute(
-                    """
-                    INSERT INTO preference_profiles (
-                        version, parent_version, profile_json, evidence_ids_json,
-                        change_summary, last_feedback_revision_id, source, active
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-                    """,
-                    (
-                        version,
-                        parent_version,
-                        json.dumps(saved.as_prompt_dict(), ensure_ascii=False),
-                        json.dumps(saved.evidence_ids),
-                        saved.change_summary,
-                        saved.last_feedback_revision_id,
-                        source,
-                    ),
-                )
+                _insert_profile(connection, saved, parent_version=parent_version)
             except BaseException:
                 connection.rollback()
                 raise
@@ -1011,17 +1121,15 @@ class SQLiteStorage:
                 return saved
 
     def rollback_profile(self, target_version: int) -> PreferenceProfile:
+        with sender_lock(self.path):
+            return self._rollback_profile(target_version)
+
+    def _rollback_profile(self, target_version: int) -> PreferenceProfile:
         self.initialize()
         with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
-                target = connection.execute(
-                    """
-                    SELECT profile_json, evidence_ids_json FROM preference_profiles
-                    WHERE version = ?
-                    """,
-                    (target_version,),
-                ).fetchone()
+                target = _read_profile(connection, version=target_version)
                 if target is None:
                     raise StorageError(
                         f"preference profile v{target_version} not found"
@@ -1040,28 +1148,43 @@ class SQLiteStorage:
                         "SELECT coalesce(max(revision_id), 0) FROM feedback_revisions"
                     ).fetchone()[0]
                 )
-                payload = json.loads(target[0])
-                payload["version"] = version
                 summary = f"回滚到 v{target_version}；现有反馈已标记为已处理"
-                payload["change_summary"] = summary
-                connection.execute("UPDATE preference_profiles SET active = 0")
-                connection.execute(
-                    """
-                    INSERT INTO preference_profiles (
-                        version, parent_version, profile_json, evidence_ids_json,
-                        change_summary, last_feedback_revision_id, source,
-                        rollback_from_version, active
-                    ) VALUES (?, ?, ?, ?, ?, ?, 'rollback', ?, 1)
-                    """,
-                    (
-                        version,
-                        parent_version,
-                        json.dumps(payload, ensure_ascii=False),
-                        target[1],
-                        summary,
-                        latest_feedback,
-                        target_version,
+                current = _read_profile(connection)
+                processed = current.last_feedback_revision_id if current else 0
+                full_cutoff = (
+                    current.update.last_full_feedback_revision_id
+                    if current and current.update
+                    else 0
+                )
+                revision_count, since_full = connection.execute(
+                    """SELECT count(CASE WHEN revision_id > ? THEN 1 END),
+                              count(CASE WHEN revision_id > ? THEN 1 END)
+                       FROM feedback_revisions""",
+                    (processed, full_cutoff),
+                ).fetchone()
+                saved = replace(
+                    target,
+                    version=version,
+                    change_summary=summary,
+                    last_feedback_revision_id=latest_feedback,
+                    notified=False,
+                    update=PreferenceUpdate(
+                        mode="rollback",
+                        trigger="manual_rollback",
+                        feedback_count=0,
+                        revision_count=revision_count,
+                        revisions_since_rebuild=since_full,
+                        last_full_feedback_revision_id=full_cutoff,
+                        input_chars=0,
                     ),
+                )
+                # Rollback deliberately preserves historical evidence, including
+                # feedback since corrected; the next new revision forces a rebuild.
+                _insert_profile(
+                    connection,
+                    saved,
+                    parent_version=parent_version,
+                    rollback_from_version=target_version,
                 )
             except BaseException:
                 connection.rollback()
@@ -1302,9 +1425,77 @@ def _card_delivery(row: sqlite3.Row | tuple[object, ...]) -> CardDelivery:
     )
 
 
-def _preference_profile(row: sqlite3.Row | tuple[object, ...]) -> PreferenceProfile:
+def _feedback_evidence(
+    connection: sqlite3.Connection, *, cutoff: int = 9_223_372_036_854_775_807
+) -> tuple[FeedbackEvidence, ...]:
+    rows = connection.execute(
+        """SELECT f.revision_id, f.delivery_id, s.article_key, f.sentiment,
+                  f.reason, s.title, s.category, s.summary, s.detail, f.created_at
+           FROM feedback_revisions f
+           JOIN card_deliveries d ON d.delivery_id = f.delivery_id
+           JOIN article_snapshots s ON s.snapshot_id = d.snapshot_id
+           WHERE f.revision_id <= ? AND f.revision_id = (
+               SELECT max(f2.revision_id) FROM feedback_revisions f2
+               WHERE f2.delivery_id = f.delivery_id AND f2.revision_id <= ?
+           ) ORDER BY f.revision_id""",
+        (cutoff, cutoff),
+    ).fetchall()
+    return tuple(FeedbackEvidence(*row) for row in rows)
+
+
+def _read_profile(
+    connection: sqlite3.Connection, *, version: int | None = None
+) -> PreferenceProfile | None:
+    if not _table_exists(connection, "preference_profiles"):
+        return None
+    clause = "active = 1" if version is None else "version = ?"
+    row = connection.execute(
+        """SELECT version, profile_json, evidence_ids_json, change_summary,
+                  last_feedback_revision_id, notified_at
+           FROM preference_profiles WHERE """
+        + clause,
+        () if version is None else (version,),
+    ).fetchone()
+    return _preference_profile(connection, row) if row is not None else None
+
+
+def _preference_profile(
+    connection: sqlite3.Connection, row: sqlite3.Row | tuple[object, ...]
+) -> PreferenceProfile:
     payload = json.loads(str(row[1]))
     evidence_ids = tuple(int(value) for value in json.loads(str(row[2])))
+    format_version = payload.get("format_version", 1)
+    entries = ()
+    if format_version == PROFILE_FORMAT_VERSION:
+        if not _table_exists(connection, "preference_entries"):
+            raise StorageError("format v2 preference entries are missing")
+        evidence: dict[str, list[int]] = {}
+        for entry_id, revision in connection.execute(
+            """SELECT entry_id, feedback_revision_id FROM preference_entry_evidence
+               WHERE profile_version = ? ORDER BY feedback_revision_id""",
+            (row[0],),
+        ):
+            evidence.setdefault(entry_id, []).append(revision)
+        entries = tuple(
+            PreferenceEntry(entry_id, category, text, tuple(evidence.get(entry_id, ())))
+            for entry_id, category, text in connection.execute(
+                """SELECT entry_id, category, text FROM preference_entries
+                   WHERE profile_version = ? ORDER BY position""",
+                (row[0],),
+            )
+        )
+    elif format_version != 1:
+        raise StorageError(f"unsupported preference format: {format_version}")
+    update = None
+    if _table_exists(connection, "preference_updates"):
+        update_row = connection.execute(
+            """SELECT mode, trigger, feedback_count, revision_count,
+                      revisions_since_rebuild, last_full_feedback_revision_id,
+                      input_chars FROM preference_updates WHERE profile_version = ?""",
+            (row[0],),
+        ).fetchone()
+        if update_row is not None:
+            update = PreferenceUpdate(*update_row)
     return PreferenceProfile(
         version=int(row[0]),
         like_rules=tuple(str(value) for value in payload.get("like_rules", [])),
@@ -1315,4 +1506,86 @@ def _preference_profile(row: sqlite3.Row | tuple[object, ...]) -> PreferenceProf
         change_summary=str(row[3]),
         last_feedback_revision_id=int(row[4]),
         notified=row[5] is not None,
+        format_version=format_version,
+        entries=entries,
+        update=update,
     )
+
+
+def _validate_profile_evidence(profile: PreferenceProfile, valid_ids: set[int]) -> None:
+    ids = [e.entry_id for e in profile.entries]
+    if not ids or len(ids) != len(set(ids)):
+        raise StorageError("preference entries are empty or have duplicate IDs")
+    all_evidence = set()
+    for entry in profile.entries:
+        if (
+            not entry.entry_id
+            or entry.category not in PROFILE_CATEGORIES
+            or not entry.text.strip()
+            or not entry.evidence_ids
+            or any(type(i) is not int for i in entry.evidence_ids)
+            or not set(entry.evidence_ids) <= valid_ids
+        ):
+            raise StorageError(
+                "preference entry has missing, replaced or invalid evidence"
+            )
+        all_evidence.update(entry.evidence_ids)
+    if all_evidence != set(profile.evidence_ids):
+        raise StorageError("preference evidence union does not match entry evidence")
+
+
+def _insert_profile(
+    connection: sqlite3.Connection,
+    profile: PreferenceProfile,
+    *,
+    parent_version: int | None,
+    rollback_from_version: int | None = None,
+) -> None:
+    connection.execute("UPDATE preference_profiles SET active = 0 WHERE active = 1")
+    connection.execute(
+        """INSERT INTO preference_profiles (
+               version, parent_version, profile_json, evidence_ids_json,
+               change_summary, last_feedback_revision_id, source,
+               rollback_from_version, active
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)""",
+        (
+            profile.version,
+            parent_version,
+            json.dumps(profile.as_entry_dict(), ensure_ascii=False),
+            json.dumps(profile.evidence_ids),
+            profile.change_summary,
+            profile.last_feedback_revision_id,
+            "llm" if rollback_from_version is None else "rollback",
+            rollback_from_version,
+        ),
+    )
+    connection.executemany(
+        "INSERT INTO preference_entries VALUES (?, ?, ?, ?, ?)",
+        [
+            (profile.version, e.entry_id, e.category, position, e.text)
+            for position, e in enumerate(profile.entries)
+        ],
+    )
+    connection.executemany(
+        "INSERT INTO preference_entry_evidence VALUES (?, ?, ?)",
+        [
+            (profile.version, e.entry_id, revision)
+            for e in profile.entries
+            for revision in e.evidence_ids
+        ],
+    )
+    if profile.update is not None:
+        update = profile.update
+        connection.execute(
+            """INSERT INTO preference_updates VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                profile.version,
+                update.mode,
+                update.trigger,
+                update.feedback_count,
+                update.revision_count,
+                update.revisions_since_rebuild,
+                update.last_full_feedback_revision_id,
+                update.input_chars,
+            ),
+        )

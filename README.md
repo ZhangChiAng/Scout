@@ -22,7 +22,7 @@ cp models.example.toml models.toml
 
 编辑 `.env`：
 
-- `SCOUT_LLM_API_KEY`：个性化 `--send`、`--dry-run` 必需；
+- `SCOUT_LLM_API_KEY`：个性化发送、只读评价及两个偏好重整命令必需；
 - `FEISHU_APP_ID`、`FEISHU_APP_SECRET`：listener、发送与校准必需；
 - `FEISHU_RECEIVE_ID_TYPE=chat_id`、`FEISHU_RECEIVE_ID`：发送、listener 与校准的群目标；
 - `SCOUT_DB_PATH`：可选，默认 `data/scout.sqlite3`。
@@ -31,7 +31,8 @@ cp models.example.toml models.toml
 为 `openai_responses`，环境变量名固定为 `SCOUT_LLM_API_KEY`。端点必须支持
 `text.format` JSON Schema、`store=false`、`output_text`、`status` 与
 `incomplete_details`；Scout 不降级成自由文本解析。
-偏好归纳和评价均保持 `max_output_tokens=65536`、600 秒超时，关闭 SDK 自动重试。
+偏好归纳和评价均设置 `reasoning.effort=max`，保持 `max_output_tokens=65536`、
+600 秒超时，关闭 SDK 自动重试。
 
 `config.toml` 只配置橘鸦 RSS、网络限制和飞书卡片最大字节数。来源名是 SQLite
 持久化身份，建立基线后不要修改。
@@ -97,6 +98,12 @@ uv run --locked python -m scout --dry-run --issue-date 2026-09-02
 uv run --locked python -m scout --profile-show
 uv run --locked python -m scout --profile-history
 
+# 真实模型全量重整预览：显示完整结果及输入字符数，SQLite 零写入，不发送消息
+uv run --locked python -m scout --profile-rebuild-preview
+
+# 全量重整、启用新版本并通知飞书群；只处理偏好，不进入新闻推送流程
+uv run --locked python -m scout --profile-rebuild
+
 # 复制旧版本为新的活动版本；现有反馈会标记已处理，避免立即反弹
 uv run --locked python -m scout --profile-rollback 1
 ```
@@ -104,6 +111,45 @@ uv run --locked python -m scout --profile-rollback 1
 `--issue-date` 只可搭配 `--send` 或 `--dry-run`，必须为 `YYYY-MM-DD`。优先读取
 RSS；该日期已退出 RSS 或 RSS 暂时不可达时，使用 SQLite 中已有的完整日报快照。
 没有完整快照会明确报错，不会换成其他日期。历史日报需逐期明确指定。
+所有模式互斥；两个重整命令均不接受 `--issue-date`。正式重整、sender、校准和
+回滚共用写操作锁。重整通知失败后新档案仍然生效且保留待通知状态；重试优先补发
+已生成版本，没有新反馈时不会再次调用模型生成。已通知版本再次手动重整仍会强制
+生成新版本。
+
+## 偏好增量归纳与全量重整
+
+格式 v2 分为“判断规则、具体对象、专题兴趣、重要疑问”。规则表达跨新闻适用的
+条件与例外；具体对象记录产品、公司与 owner 的关系；专题保留不能被通用规则
+充分表达的明确兴趣；疑问只保留确实影响推荐且现有反馈不能解决的歧义。
+判断规则争取不超过 10 条、重要疑问争取不超过 3 条，不机械截断。
+
+日常更新输入当前精简偏好及上次成功更新后新增的有效反馈（倾向、原因和原新闻
+标题、摘要、详情，首期保留完整上下文）。模型输出完整新偏好，可合并、改写和
+删除；重复反馈只用于印证，不自动增加规则，不复述案例或从单篇评价推断整个领域
+的喜恶。明确表达的对象、关系和兴趣应保留，不为每个兴趣推演未知边界。
+即使内容保持不变，也保存版本、更新说明及已消费进度。
+
+首次达到两条喜欢、两条不喜欢时全量归纳；旧格式切换、自上次全量后累计 20 条
+真实反馈修订、修改已处理反馈、手动重整、回滚后首次有新反馈，都直接进行全量
+重整，不先发一次增量请求。回调仍只记录反馈，在下一次偏好更新时应用这些触发
+条件；timer 停用期间不自动启动 sender。
+
+全量只使用每张卡片当前有效的最新版反馈及原新闻上下文，旧偏好仅用于变化说明。
+每条结论必须关联有效依据，不要求每条反馈都形成结论。增量可引用本轮反馈或上版
+条目，程序将条目引用展开为 SQLite 中的反馈依据；不存在或截止位置已被替换的
+依据会被拒绝。新闻评价模型与飞书偏好卡仅收到可读内容，不携带历史证据 ID 集合。
+旧版本仍可展示和回滚，完整历史及逐条证据保留在数据库中。
+
+每轮先在一致的只读事务中固定反馈截止位置，随即关闭事务再调用模型；期间新到
+反馈留待下一轮。新偏好、逐条依据、活动版本、更新方式和消费进度在一个短事务中
+提交。修订数使用真实行数，不能用 ID 差值代替；模型或校验失败不推进进度，发送
+流程停止。首期不分批归纳历史，超出模型容量时明确失败，不静默删减历史。
+
+命令日志及 `--profile-show/--profile-history` 显示更新方式、输入反馈条数、
+真实修订条数、判断规则条数、可读偏好字符数及输入字符数。`input_chars` 是
+instructions、JSON 输入和输出 schema 的字符数总和，**不是 token 数**；
+`revisions_since_rebuild` 记录本轮开始时距前次全量的修订数，
+`last_full_feedback_revision_id` 保存成功全量的截止位置。
 
 条目成功发送后立即保存 `message_id/chat_id`。“已在列表呈现”也计入本期完成和
 自动去重，但不等于“正文已送达”。没有不推荐条目时不发空列表；全是不推荐时只发
@@ -143,10 +189,12 @@ systemctl --user list-timers scout-send.timer
 timer 使用 `Asia/Shanghai` 的 `10:00 / 12:30 / 21:00`，并设置
 `Persistent=true`。需要退出登录后仍常驻时，由系统管理员为该用户启用 linger。
 
-本轮观察仅处理 **2026-09-02 剩余 8 条**。发送 timer 已停用，listener 保持运行；
-观察反馈前不推进其他日期，也不自动恢复 timer。观察结束后如需恢复，重新执行
+本轮完成偏好 v2 重整与通知，并对 **2026-09-02** 做只读评价检查。发送 timer
+保持停用，listener 保持运行，不重发新闻、不改写旧列表、不推进其他日期。
+观察结束后如需恢复，重新执行
 上面的 timer 链接、`daemon-reload` 和 `enable --now` 命令。
 本期真实结果与未覆盖项见 [验收记录](docs/acceptance-2026-09-02.md)。
+偏好重整上线结果见 [偏好验收记录](docs/acceptance-profile-2026-09-06.md)。
 
 ## 工程检查与已知边界
 
