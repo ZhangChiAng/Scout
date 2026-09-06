@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import sys
+from datetime import date
 from pathlib import Path
 
 from .app import RunLockedError, run
@@ -15,7 +16,6 @@ from .config import (
     ConfigError,
     load_config,
     load_dotenv,
-    resolve_feishu_app_credentials,
     resolve_feishu_delivery,
 )
 from .feedback import FeedbackListenerError, listen_feedback
@@ -61,9 +61,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--config", default="config.toml", help="TOML config path")
     parser.add_argument(
+        "--issue-date",
+        metavar="YYYY-MM-DD",
+        help="select exactly one issue for --send/--dry-run, ignoring age and baseline",
+    )
+    parser.add_argument(
         "--models-config", default="models.toml", help="model TOML config path"
     )
     args = parser.parse_args(argv)
+    if args.issue_date is not None:
+        if not (args.send or args.dry_run):
+            parser.error("--issue-date is only valid with --send or --dry-run")
+        try:
+            if date.fromisoformat(args.issue_date).isoformat() != args.issue_date:
+                raise ValueError
+        except ValueError:
+            parser.error("--issue-date must be a valid YYYY-MM-DD date")
 
     try:
         load_dotenv(Path.cwd() / ".env")
@@ -113,11 +126,11 @@ def main(argv: list[str] | None = None) -> int:
 
         config = load_config(args.config)
         if args.listen_feedback:
-            credentials = resolve_feishu_app_credentials()
             listen_feedback(
-                credentials,
+                resolve_feishu_delivery(),
                 database_path=database_path,
                 max_payload_bytes=config.feishu.max_payload_bytes,
+                timeout_seconds=config.network.timeout_seconds,
             )
             return 0
 
@@ -139,6 +152,7 @@ def main(argv: list[str] | None = None) -> int:
             output=sys.stdout,
             feishu_delivery=resolve_feishu_delivery() if args.send else None,
             model_config=model_config,
+            issue_date=args.issue_date,
         )
     except KeyboardInterrupt:
         print("Interrupted.", file=sys.stderr)

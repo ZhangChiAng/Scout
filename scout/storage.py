@@ -7,6 +7,7 @@ from contextlib import closing
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from .issue_state import ISSUE_SCHEMAS
 from .model import (
     DigestArticle,
     NewsItem,
@@ -208,6 +209,8 @@ class SQLiteStorage:
                 connection.execute(OWNER_SCHEMA)
                 connection.execute(PREFERENCE_PROFILES_SCHEMA)
                 connection.execute(EVALUATION_CACHE_SCHEMA)
+                for schema in ISSUE_SCHEMAS:
+                    connection.execute(schema)
                 connection.execute(
                     """
                     CREATE INDEX IF NOT EXISTS delivered_items_dedupe_key_idx

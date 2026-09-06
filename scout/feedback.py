@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import http
+import logging
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -29,13 +31,16 @@ from lark_oapi.ws.const import (
 from lark_oapi.ws.enum import MessageType
 from lark_oapi.ws.model import Response
 
-from .config import FeishuAppCredentials
+from .config import FeishuDeliveryConfig
+from .issue_state import IssueState
 from .model import PersonalizedEvaluation
 from .notifier import (
+    FeishuNotifier,
     build_article_card,
     build_feedback_form_card,
     build_recorded_card,
 )
+from .reveal import RevealWorker
 from .storage import FeedbackError, SQLiteStorage
 
 
@@ -90,9 +95,17 @@ class _CardCompatibleWSClient(_WSClient):
 
 
 class FeedbackHandler:
-    def __init__(self, storage: SQLiteStorage, *, max_payload_bytes: int) -> None:
+    def __init__(
+        self,
+        storage: SQLiteStorage,
+        *,
+        max_payload_bytes: int,
+        wake_reveal: Callable[[], None],
+    ) -> None:
         self.storage = storage
         self.max_payload_bytes = max_payload_bytes
+        self.issue_state = IssueState(storage)
+        self.wake_reveal = wake_reveal
 
     def __call__(self, callback: P2CardActionTrigger) -> P2CardActionTriggerResponse:
         try:
@@ -117,6 +130,25 @@ class FeedbackHandler:
         )
         message_id = context.open_message_id if context is not None else ""
         open_id = operator.open_id if operator is not None else ""
+        if value.get("action") == "reveal_selected":
+            count = self.issue_state.enqueue(
+                list_id=_positive_int(value.get("list_id"), "list_id"),
+                message_id=message_id or "",
+                chat_id=context.open_chat_id if context is not None else "",
+                open_id=open_id or "",
+                event_id=getattr(callback.header, "event_id", "") or "",
+                form=action.form_value,
+            )
+            self.wake_reveal()
+            logging.getLogger(__name__).info(
+                "Reveal submission list=%s queued=%s", value.get("list_id"), count
+            )
+            return _response(
+                toast=f"已接收 {count} 条正文请求"
+                if count
+                else "所选正文已在发送或已送达",
+                toast_type="success",
+            )
         snapshot_id = _positive_int(value.get("snapshot_id"), "snapshot_id")
         purpose = value.get("purpose")
         if purpose not in {"calibration", "personalized"}:
@@ -181,28 +213,45 @@ class FeedbackHandler:
 
 
 def listen_feedback(
-    credentials: FeishuAppCredentials,
+    delivery: FeishuDeliveryConfig,
     *,
     database_path: str | Path,
     max_payload_bytes: int,
+    timeout_seconds: float,
 ) -> None:
     storage = SQLiteStorage(database_path)
     storage.initialize()
-    callback = FeedbackHandler(storage, max_payload_bytes=max_payload_bytes)
+    worker = RevealWorker(
+        IssueState(storage),
+        FeishuNotifier(delivery, timeout_seconds),
+        max_payload_bytes=max_payload_bytes,
+    )
+    callback = FeedbackHandler(
+        storage,
+        max_payload_bytes=max_payload_bytes,
+        wake_reveal=worker.wake.set,
+    )
     dispatcher = (
         lark.EventDispatcherHandler.builder("", "", lark.LogLevel.ERROR)
         .register_p2_card_action_trigger(callback)
         .build()
     )
     client = _CardCompatibleWSClient(
-        credentials.app_id,
-        credentials.app_secret,
+        delivery.app_id,
+        delivery.app_secret,
         event_handler=dispatcher,
         log_level=lark.LogLevel.ERROR,
     )
     try:
+        worker.start()
+    except BlockingIOError as exc:
+        raise FeedbackListenerError(
+            "another Scout listener is already running"
+        ) from exc
+    try:
         client.start()
     finally:
+        worker.close()
         loop = asyncio.get_event_loop()
         if not loop.is_closed():
             loop.run_until_complete(client._disconnect())

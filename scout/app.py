@@ -16,6 +16,7 @@ from .collector import CollectionBatch, CollectionError, collect_source
 from .config import AppConfig, FeishuDeliveryConfig, SourceConfig
 from .datetime_utils import BEIJING_TIMEZONE, beijing_date, publication_date_bound
 from .digest import normalize_articles, parse_issue
+from .issue_state import FilteredList, IssueState, ListMember
 from .llm import (
     EVALUATION_BATCH_SIZE,
     LLMError,
@@ -27,7 +28,9 @@ from .model import DigestArticle, NewsItem, PersonalizedEvaluation, PreferencePr
 from .notifier import (
     FeishuNotifier,
     build_article_card,
+    build_filtered_list_card,
     build_profile_card,
+    partition_filtered_members,
 )
 from .storage import SQLiteStorage
 
@@ -60,6 +63,7 @@ def run(
     collector_factory: Callable[..., object] | None = None,
     notifier_factory: Callable[..., object] = FeishuNotifier,
     clock: Callable[[], datetime] = _now_beijing,
+    issue_date: str | None = None,
 ) -> int:
     if mode not in {"send", "dry-run", "calibrate"}:
         raise ValueError(f"unsupported mode: {mode}")
@@ -67,6 +71,13 @@ def run(
         raise ValueError(f"Feishu delivery configuration is required in --{mode} mode")
     if mode in {"send", "dry-run"} and model_config is None:
         raise ValueError(f"model configuration is required in --{mode} mode")
+    if issue_date is not None:
+        if mode not in {"send", "dry-run"}:
+            raise ValueError("--issue-date is only valid with --send or --dry-run")
+        if date.fromisoformat(issue_date).isoformat() != issue_date:
+            raise ValueError("--issue-date must use YYYY-MM-DD")
+    if mode == "send" and feishu_delivery.receive_id_type != "chat_id":
+        raise ValueError("personalized delivery requires a Feishu group chat_id")
 
     lock_context = (
         _sender_lock(database_path) if mode in {"send", "calibrate"} else _null_lock()
@@ -83,6 +94,7 @@ def run(
                 collector_factory=collector_factory,
                 notifier_factory=notifier_factory,
                 clock=clock,
+                issue_date=issue_date,
             )
         )
 
@@ -98,6 +110,7 @@ async def _run(
     collector_factory: Callable[..., object] | None,
     notifier_factory: Callable[..., object],
     clock: Callable[[], datetime],
+    issue_date: str | None,
 ) -> int:
     storage = SQLiteStorage(database_path)
     stats = RunStats()
@@ -105,6 +118,15 @@ async def _run(
     read_only = mode == "dry-run"
     if not read_only:
         storage.initialize()
+
+    dated_items = {}
+    if issue_date is not None:
+        # Reject an unavailable date before updating preferences or posting a
+        # profile notification. An explicit date never falls through to today.
+        for source in config.sources:
+            dated_items[source.name] = _select_dated_issue(
+                source, config, collector_factory, storage, issue_date, output
+            )
 
     notifier = None
     if feishu_delivery is not None:
@@ -149,6 +171,23 @@ async def _run(
                 return 1
 
         for source in config.sources:
+            if issue_date is not None:
+                item, saved_articles = dated_items[source.name]
+                await _process_issue(
+                    source,
+                    item,
+                    mode=mode,
+                    storage=storage,
+                    notifier=notifier,
+                    llm=llm,
+                    profile=profile,
+                    config=config,
+                    output=output,
+                    stats=stats,
+                    saved_articles=saved_articles,
+                    selected_date=issue_date,
+                )
+                continue
             try:
                 batch = _collect(source, config, collector_factory)
             except Exception as exc:  # noqa: BLE001 - isolate source collection
@@ -165,6 +204,7 @@ async def _run(
                     file=output,
                 )
             items = _unique_items(batch.items, stats)
+            items.sort(key=_issue_date, reverse=True)
             if mode == "calibrate":
                 if not items:
                     stats.failed += 1
@@ -210,7 +250,7 @@ async def _run(
                 continue
 
             try:
-                unseen = storage.unseen(items, read_only=read_only)
+                unseen = storage.unseen(items[:1], read_only=read_only)
             except Exception as exc:  # noqa: BLE001 - isolate source state
                 stats.failed += 1
                 print(
@@ -219,7 +259,7 @@ async def _run(
                 )
                 continue
             stats.skipped += len(items) - len(unseen)
-            selected = unseen
+            selected = unseen[:1]
             if source.max_age_days is not None:
                 selected, stale = _partition_by_age(
                     selected,
@@ -313,10 +353,18 @@ async def _process_issue(
     config: AppConfig,
     output: IO[str],
     stats: RunStats,
+    saved_articles: tuple[DigestArticle, ...] | None = None,
+    selected_date: str | None = None,
 ) -> None:
+    state = IssueState(storage)
     try:
-        issue = parse_issue(item.content, page_url=item.url)
-        articles = normalize_articles(issue, digest_key=item.dedupe_key)
+        if saved_articles is None:
+            issue = parse_issue(item.content, page_url=item.url)
+            articles = normalize_articles(issue, digest_key=item.dedupe_key)
+            issue_date = issue.issue_date or _issue_date(item)
+        else:
+            articles = saved_articles
+            issue_date = selected_date or _issue_date(item)
         if not articles:
             raise ValueError("issue overview contains no entries")
     except Exception as exc:  # noqa: BLE001 - isolate malformed issue
@@ -334,6 +382,7 @@ async def _process_issue(
     else:
         try:
             snapshots = storage.save_article_snapshots(articles)
+            state.save_issue(item, issue_date, articles)
         except Exception as exc:  # noqa: BLE001 - isolate snapshot transaction
             stats.failed += 1
             print(
@@ -355,17 +404,22 @@ async def _process_issue(
         )
         return
 
+    existing_lists = state.lists(item.dedupe_key)
+    planned_keys = {
+        m.article.article_key for listing in existing_lists for m in listing.members
+    }
     pending = [
         article
         for article in articles
-        if not storage.is_article_delivered(
-            article.article_key, read_only=mode == "dry-run"
-        )
+        if not state.presented(article.article_key)
+        and article.article_key not in planned_keys
     ]
     stats.skipped += len(articles) - len(pending)
     assert llm is not None
     recent_likes = storage.recent_feedback("like", read_only=mode == "dry-run")
     recent_dislikes = storage.recent_feedback("dislike", read_only=mode == "dry-run")
+    rejected: list[ListMember] = []
+    delivery_blocked = False
     for start in range(0, len(pending), EVALUATION_BATCH_SIZE):
         batch = pending[start : start + EVALUATION_BATCH_SIZE]
         evaluations: dict[str, PersonalizedEvaluation] = {}
@@ -397,10 +451,24 @@ async def _process_issue(
                 f"{batch[0].position}-{batch[-1].position}: {type(exc).__name__}",
                 file=output,
             )
+            delivery_blocked = True
             continue
         for article in batch:
             evaluation = evaluations[article.article_key]
             snapshot_id = snapshots[(article.article_key, article.content_hash)]
+            if evaluation.verdict == "不推荐":
+                rejected.append(
+                    ListMember(
+                        snapshot_id or article.position,
+                        snapshot_id,
+                        article,
+                        evaluation,
+                        profile.version,
+                    )
+                )
+                continue
+            if delivery_blocked:
+                continue
             try:
                 card = build_article_card(
                     article,
@@ -429,14 +497,92 @@ async def _process_issue(
                 stats.sent += 1
             except Exception as exc:  # noqa: BLE001 - isolate one card delivery
                 stats.failed += 1
+                delivery_blocked = True
                 print(
                     f"Card delivery failed: {item.title} #{article.position}: "
                     f"{type(exc).__name__}",
                     file=output,
                 )
 
-    if mode == "send" and storage.all_articles_delivered(
-        article.article_key for article in articles
+    # Freeze and present lists only after every evaluation and ordinary body
+    # succeeded. Keep cached judgments and any partial list plan for retries.
+    if delivery_blocked:
+        print(
+            f"Tail list deferred until missing bodies/evaluations recover: {issue_date}",
+            file=output,
+        )
+        return
+    try:
+        if rejected and existing_lists:
+            raise ValueError(
+                "issue gained new rejected entries after its list was frozen"
+            )
+        pages = partition_filtered_members(
+            rejected,
+            issue_date=issue_date,
+            max_payload_bytes=config.feishu.max_payload_bytes,
+        )
+        if mode == "dry-run":
+            previews = existing_lists or tuple(
+                FilteredList(
+                    0,
+                    item.dedupe_key,
+                    issue_date,
+                    index,
+                    len(pages),
+                    "",
+                    None,
+                    "",
+                    0,
+                    members,
+                )
+                for index, members in enumerate(pages, 1)
+            )
+            for listing in previews:
+                if listing.message_id:
+                    continue
+                print(
+                    json.dumps(
+                        build_filtered_list_card(
+                            listing, max_payload_bytes=config.feishu.max_payload_bytes
+                        ),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                    file=output,
+                )
+                stats.previewed += 1
+        else:
+            assert notifier is not None
+            listings = existing_lists or state.create_lists(
+                digest_key=item.dedupe_key,
+                issue_date=issue_date,
+                chat_id=notifier.delivery.receive_id,
+                pages=pages,
+            )
+            for listing in listings:
+                if listing.message_id:
+                    continue
+                card = build_filtered_list_card(
+                    listing, max_payload_bytes=config.feishu.max_payload_bytes
+                )
+                sent = notifier.send_card(
+                    card, send_uuid=listing.send_uuid, chat_id=listing.chat_id
+                )
+                state.mark_list_sent(listing.list_id, sent.message_id, sent.chat_id)
+                stats.sent += 1
+                print(
+                    f"Tail list sent: {issue_date}: {len(listing.members)} entries "
+                    f"({listing.page}/{listing.pages})",
+                    file=output,
+                )
+    except Exception as exc:  # noqa: BLE001 - isolate tail delivery and accounting
+        stats.failed += 1
+        print(f"Tail list failed: {issue_date}: {exc}", file=output)
+        return
+
+    if mode == "send" and all(
+        state.presented(article.article_key) for article in articles
     ):
         try:
             storage.record_delivered([item])
@@ -536,6 +682,50 @@ def _collect(
     if any(item.source != source.name for item in batch.items):
         raise CollectionError("collector returned an entry for the wrong source")
     return batch
+
+
+def _issue_date(item: NewsItem) -> str:
+    issue_date = parse_issue(item.content, page_url=item.url).issue_date
+    if issue_date:
+        return date.fromisoformat(issue_date).isoformat()
+    bound = publication_date_bound(item.published_at)
+    if bound is None:
+        raise ValueError(f"issue has no identifiable date: {item.title}")
+    return bound.isoformat()
+
+
+def _select_dated_issue(
+    source: SourceConfig,
+    config: AppConfig,
+    collector_factory: Callable[..., object] | None,
+    storage: SQLiteStorage,
+    issue_date: str,
+    output: IO[str],
+) -> tuple[NewsItem, tuple[DigestArticle, ...] | None]:
+    try:
+        batch = _collect(source, config, collector_factory)
+    except Exception as exc:  # noqa: BLE001 - permit full-snapshot fallback
+        print(
+            f"RSS unavailable ({type(exc).__name__}); looking for full issue snapshot.",
+            file=output,
+        )
+    else:
+        matches = {
+            item.dedupe_key: item
+            for item in batch.items
+            if _issue_date(item) == issue_date
+        }
+        if len(matches) > 1:
+            raise ValueError(f"multiple RSS issues match {issue_date}")
+        if matches:
+            item = next(iter(matches.values()))
+            print(f"Selected issue from RSS: {issue_date}", file=output)
+            return item, None
+    saved = IssueState(storage).load_issue(source.name, issue_date)
+    if saved is None:
+        raise ValueError(f"{issue_date} not found in RSS or a complete saved snapshot")
+    print(f"Selected complete saved snapshot: {issue_date}", file=output)
+    return saved
 
 
 def _unique_items(items: Sequence[NewsItem], stats: RunStats) -> list[NewsItem]:

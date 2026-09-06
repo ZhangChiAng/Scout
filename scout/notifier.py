@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import atexit
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import lark_oapi as lark
-from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
+from lark_oapi.api.im.v1 import (
+    CreateMessageRequest,
+    CreateMessageRequestBody,
+    PatchMessageRequest,
+    PatchMessageRequestBody,
+)
 from lark_oapi.ws.client import loop as _lark_ws_loop
 
 from .config import FeishuDeliveryConfig
+from .issue_state import FilteredList, ListMember
 from .model import DigestArticle, PersonalizedEvaluation, PreferenceProfile
 from .storage import CardDelivery, FeedbackEvidence
 
@@ -253,6 +259,132 @@ def build_profile_card(
     return card
 
 
+def build_filtered_list_card(
+    listing: FilteredList, *, max_payload_bytes: int
+) -> dict[str, object]:
+    checkers = []
+    for member in listing.members:
+        locked = member.status in {"pending", "sending", "delivered"}
+        checkers.append(
+            {
+                "tag": "checker",
+                "name": f"member_{member.member_id}",
+                "text": {"tag": "plain_text", "content": member.article.title},
+                "checked": locked,
+                "disabled": locked,
+                "overall_checkable": True,
+                "checked_style": {"show_strikethrough": False, "opacity": 1},
+                "disabled_tips": {
+                    "tag": "plain_text",
+                    "content": "正文已送达"
+                    if member.status == "delivered"
+                    else "正文正在发送",
+                },
+            }
+        )
+    delivered = sum(m.status == "delivered" for m in listing.members)
+    pending = sum(m.status in {"pending", "sending"} for m in listing.members)
+    failed = sum(m.status == "failed" for m in listing.members)
+    note = f"已送达 {delivered} 条 · 发送中 {pending} 条。可继续勾选其他新闻。"
+    if failed:
+        note += f" {failed} 条发送失败，可重新勾选重试。"
+    card = {
+        "config": {"wide_screen_mode": True, "update_multi": True},
+        "header": {
+            "template": "grey",
+            "title": {
+                "tag": "plain_text",
+                "content": (
+                    f"{listing.issue_date} · 不推荐 · {len(listing.members)} 条"
+                    + (
+                        f" · 第 {listing.page}/{listing.pages} 张"
+                        if listing.pages > 1
+                        else ""
+                    )
+                ),
+            },
+        },
+        "elements": [
+            _markdown(note),
+            {
+                "tag": "form",
+                "name": "scout_reveal",
+                "elements": [
+                    *checkers,
+                    {
+                        "tag": "button",
+                        "name": "reveal_selected",
+                        "action_type": "form_submit",
+                        "type": "primary",
+                        "text": {"tag": "plain_text", "content": "推送所选正文"},
+                        "value": {
+                            "action": "reveal_selected",
+                            "list_id": listing.list_id,
+                        },
+                    },
+                ],
+            },
+        ],
+    }
+    _check_card_size(card, max_payload_bytes)
+    # Budget the encoded request too: nested JSON escapes quotes and slashes.
+    _check_card_size(
+        {
+            "receive_id": listing.chat_id or "x" * 64,
+            "msg_type": "interactive",
+            "uuid": listing.send_uuid or "x" * 36,
+            "content": json.dumps(card, ensure_ascii=False, separators=(",", ":")),
+        },
+        max_payload_bytes,
+    )
+    return card
+
+
+def partition_filtered_members(
+    members: Sequence[ListMember], *, issue_date: str, max_payload_bytes: int
+) -> tuple[tuple[ListMember, ...], ...]:
+    """Split on both component count and encoded capacity; never truncate titles."""
+    pages: list[tuple[ListMember, ...]] = []
+    current: list[ListMember] = []
+    for member in members:
+        candidate = [*current, member]
+        try:
+            # Budget for real SQLite IDs, page numbers and future status text.
+            preview = FilteredList(
+                2**63 - 1,
+                "",
+                issue_date,
+                999999,
+                999999,
+                "",
+                None,
+                "",
+                0,
+                tuple(candidate),
+            )
+            build_filtered_list_card(
+                preview, max_payload_bytes=max_payload_bytes - 2048
+            )
+            if len(candidate) > 50:
+                raise NotificationError("list component limit reached")
+        except NotificationError:
+            if not current:
+                raise
+            pages.append(tuple(current))
+            current = [member]
+            preview = FilteredList(
+                2**63 - 1, "", issue_date, 999999, 999999, "", None, "", 0, (member,)
+            )
+            build_filtered_list_card(
+                preview, max_payload_bytes=max_payload_bytes - 2048
+            )
+        else:
+            current = candidate
+    if current:
+        pages.append(tuple(current))
+    return tuple(pages)
+
+
 class FeishuNotifier:
     def __init__(
         self,
@@ -269,17 +401,26 @@ class FeishuNotifier:
                 f"Feishu OpenAPI client initialization failed: {type(exc).__name__}"
             ) from exc
 
-    def send_card(self, card: dict[str, object]) -> SentMessage:
+    def send_card(
+        self,
+        card: dict[str, object],
+        *,
+        send_uuid: str | None = None,
+        chat_id: str | None = None,
+    ) -> SentMessage:
         try:
             content = json.dumps(card, ensure_ascii=False, separators=(",", ":"))
             request = (
                 CreateMessageRequest.builder()
-                .receive_id_type(self.delivery.receive_id_type)
+                .receive_id_type(
+                    "chat_id" if chat_id else self.delivery.receive_id_type
+                )
                 .request_body(
                     CreateMessageRequestBody.builder()
-                    .receive_id(self.delivery.receive_id)
+                    .receive_id(chat_id or self.delivery.receive_id)
                     .msg_type("interactive")
                     .content(content)
+                    .uuid(send_uuid)
                     .build()
                 )
                 .build()
@@ -294,12 +435,36 @@ class FeishuNotifier:
             raise NotificationError(f"Feishu rejected the card (code={code!r})")
         data = getattr(response, "data", None)
         message_id = getattr(data, "message_id", None)
-        chat_id = getattr(data, "chat_id", None)
+        response_chat_id = getattr(data, "chat_id", None)
         if not isinstance(message_id, str) or not message_id:
             raise NotificationError("Feishu success response has no message_id")
-        if not isinstance(chat_id, str) or not chat_id:
-            chat_id = self.delivery.receive_id
-        return SentMessage(message_id=message_id, chat_id=chat_id)
+        if not isinstance(response_chat_id, str) or not response_chat_id:
+            response_chat_id = chat_id or self.delivery.receive_id
+        return SentMessage(message_id=message_id, chat_id=response_chat_id)
+
+    def update_card(self, message_id: str, card: dict[str, object]) -> None:
+        try:
+            request = (
+                PatchMessageRequest.builder()
+                .message_id(message_id)
+                .request_body(
+                    PatchMessageRequestBody.builder()
+                    .content(
+                        json.dumps(card, ensure_ascii=False, separators=(",", ":"))
+                    )
+                    .build()
+                )
+                .build()
+            )
+            response = self._client.im.v1.message.patch(request)
+        except Exception as exc:
+            raise NotificationError(
+                f"Feishu card update failed: {type(exc).__name__}"
+            ) from exc
+        if not response.success():
+            raise NotificationError(
+                f"Feishu rejected card update (code={response.code!r})"
+            )
 
 
 def _build_client(delivery: FeishuDeliveryConfig, timeout_seconds: float) -> object:
