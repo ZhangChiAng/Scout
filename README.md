@@ -177,7 +177,7 @@ sender 和 listener 各有独立进程锁。SQLite 使用短事务及 5 秒 busy
 
 ## systemd 用户服务
 
-仓库位于默认的 `%h/workspace/signal-feed` 时，可以直接安装；如果路径不同，先
+仓库位于默认的 `%h/workspace/scout` 时，可以直接安装；如果路径不同，先
 修改 service unit 的 `WorkingDirectory`、`EnvironmentFile` 和 `ExecStart`。
 
 ```bash

@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=%h/workspace/signal-feed
-EnvironmentFile=%h/workspace/signal-feed/.env
+WorkingDirectory=%h/workspace/scout
+EnvironmentFile=%h/workspace/scout/.env
 Environment=PYTHONUNBUFFERED=1
 ExecStart=%h/.local/bin/uv run --locked python -m scout --profile-update
