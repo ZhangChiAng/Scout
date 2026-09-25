@@ -129,12 +129,14 @@ def search(query: str, secret: str) -> dict:
         raise SearchError("知乎返回超过 2 MiB，停止解析")
     try:
         result = json.loads(body)
-    except (ValueError, UnicodeError):
+    except ValueError:
         raise SearchError("知乎未返回合法 JSON") from None
     if not isinstance(result, dict):
         raise SearchError("知乎返回不是 JSON 对象")
     # Redact an echoed token before persistence or optional model processing.
-    return json.loads(json.dumps(result, ensure_ascii=False).replace(secret, "[REDACTED]"))
+    return json.loads(
+        json.dumps(result, ensure_ascii=False).replace(secret, "[REDACTED]")
+    )
 
 
 def normalize(records: list[dict]) -> tuple[list[dict], list[str]]:
@@ -169,9 +171,14 @@ def normalize(records: list[dict]) -> tuple[list[dict], list[str]]:
                     content_id = item.get("ContentID")
                     kind = item.get("ContentType")
                     identity = url
-                    if isinstance(kind, str) and kind and (
-                        isinstance(content_id, str) and content_id
-                        or type(content_id) is int
+                    if (
+                        isinstance(kind, str)
+                        and kind
+                        and (
+                            isinstance(content_id, str)
+                            and content_id
+                            or type(content_id) is int
+                        )
                     ):
                         identity = f"{kind}:{content_id}"
                     key = hashlib.sha256(identity.encode()).hexdigest()[:24]
@@ -377,7 +384,9 @@ def main(argv: list[str] | None = None) -> int:
     source.add_argument("--query", action="append", help="精确搜索词；可以重复")
     source.add_argument("--queries-file", type=Path, help="UTF-8 文件，每行一个搜索词")
     source.add_argument("--replay", type=Path, help="读取已有 search.json，不重复搜索")
-    parser.add_argument("--evaluate", action="store_true", help="调用现有模型筛选搜索材料")
+    parser.add_argument(
+        "--evaluate", action="store_true", help="调用现有模型筛选搜索材料"
+    )
     parser.add_argument("--max-evaluations", type=int, default=30)
     parser.add_argument("--models", default="models.toml")
     parser.add_argument("--env-file", default=".env")
@@ -460,15 +469,15 @@ def main(argv: list[str] | None = None) -> int:
                 run["searches"].append(record)
                 write_json(destination / "search.json", run, secret)
                 code = record.get("response", {}).get("Code")
-                if record.get("stop") or (
-                    type(code) is int and code in {20001, 30001}
-                ):
+                if record.get("stop") or (type(code) is int and code in {20001, 30001}):
                     run["unattempted_queries"] = queries[index + 1 :]
                     break
         write_json(destination / "search.json", run, secret)
         candidates, errors = normalize(run["searches"])
         if run.get("unattempted_queries"):
-            errors.append(f"鉴权或限流后停止，尚有 {len(run['unattempted_queries'])} 条查询未执行")
+            errors.append(
+                f"鉴权或限流后停止，尚有 {len(run['unattempted_queries'])} 条查询未执行"
+            )
         write_json(destination / "candidates.json", candidates, secret)
         evaluations = {}
         if args.evaluate and candidates:
