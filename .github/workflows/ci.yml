@@ -33,7 +33,7 @@ jobs:
         run: uv run --locked ruff check .
 
       - name: Check Ruff formatting
-        run: uv run --locked ruff format --check .
+        run: uv run --locked ruff format --check --diff .
 
       - name: Compile Python modules
         run: uv run --locked python -m compileall -q scout
