@@ -254,11 +254,13 @@ class _DigestParser(HTMLParser):
 
     def handle_data(self, data: str) -> None:
         if self._code_depth > 0:
+            # Only structural code labels are article numbers; body code is text.
             if self._li is not None:
                 self._li_number += data
+                return
             elif self._h3 is not None:
                 self._h3_number += data
-            return
+                return
         if self._link_stack:
             self._link_stack[-1][1].append(data)
         if self._li is not None and self._link_stack:
