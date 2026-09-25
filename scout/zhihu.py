@@ -288,7 +288,7 @@ async def evaluate(candidates: list[dict], models: str) -> tuple[dict, list[str]
                         raise SearchError("依据片段未出现在该结果的搜索材料中")
                     accepted[key] = value
                 results.update(accepted)
-            except Exception as exc:
+            except (RuntimeError, ValueError, TypeError, KeyError) as exc:
                 errors.append(f"评价批次 {start // 6 + 1} 失败：{type(exc).__name__}")
     finally:
         await llm.close()
@@ -308,8 +308,10 @@ def report(
         "# Scout · 知乎搜索实验",
         "",
         f"运行时间（UTC）：{run['created_at']}",
-        f"查询 {len(run['searches'])} 条；去重候选 {len(candidates)} 条；"
-        f"已评价 {len(evaluations)} 条。",
+        (
+            f"查询 {len(run['searches'])} 条；去重候选 {len(candidates)} 条；"
+            f"已评价 {len(evaluations)} 条。"
+        ),
         "",
         "材料范围：知乎搜索接口返回的文字。未读取完整回答、图片或完整评论。",
         "评价只用于判断是否值得展开；候选全部保留，原始返回见 search.json。",
@@ -501,7 +503,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("已停止；已完成的搜索保存在本轮 search.json 中。", file=sys.stderr)
         return 130
-    except Exception as exc:
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError) as exc:
         # Do not print arbitrary SDK, HTTP, or parsing exception bodies.
         message = str(exc) if isinstance(exc, SearchError) else type(exc).__name__
         print(f"知乎实验失败：{message}", file=sys.stderr)
