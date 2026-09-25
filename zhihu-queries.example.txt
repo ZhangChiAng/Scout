@@ -1,0 +1,9 @@
+# 每行一条精确查询，最多 12 条；修改模型名或版本即可对照试跑。
+# 保留一条宽搜，观察场景词是否改善召回。
+DeepSeek
+DeepSeek 实际使用体验
+DeepSeek 修改现有项目代码
+DeepSeek 长文阅读 信息抽取
+DeepSeek 工具调用
+DeepSeek 翻译 实际使用
+DeepSeek 使用限制 失败案例
