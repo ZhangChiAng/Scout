@@ -6,6 +6,7 @@ import asyncio
 import base64
 import http
 import logging
+import os
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -42,6 +43,7 @@ from .notifier import (
 )
 from .reveal import RevealWorker
 from .storage import FeedbackError, SQLiteStorage
+from .zhihu_scan import ZhihuScanWorker
 
 
 class FeedbackListenerError(RuntimeError):
@@ -226,6 +228,11 @@ def listen_feedback(
         FeishuNotifier(delivery, timeout_seconds),
         max_payload_bytes=max_payload_bytes,
     )
+    scan_worker = (
+        ZhihuScanWorker(database_path)
+        if os.environ.get("ZHIHU_COLLECTOR_URL")
+        else None
+    )
     callback = FeedbackHandler(
         storage,
         max_payload_bytes=max_payload_bytes,
@@ -249,8 +256,12 @@ def listen_feedback(
             "another Scout listener is already running"
         ) from exc
     try:
+        if scan_worker is not None:
+            scan_worker.start()
         client.start()
     finally:
+        if scan_worker is not None:
+            scan_worker.close()
         worker.close()
         loop = asyncio.get_event_loop()
         if not loop.is_closed():

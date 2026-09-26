@@ -115,6 +115,15 @@ def _article(payload: dict) -> DigestArticle:
     )
 
 
+def _news_item(payload: dict) -> NewsItem:
+    # One real 2026-09-26 snapshot contains these abandoned RSS extensions.
+    # Reject any other unknown field so unexpected schema changes stay visible.
+    original = payload.copy()
+    for key in ("first_seen_at", "updated_at", "summary_html"):
+        original.pop(key, None)
+    return NewsItem(**original)
+
+
 class IssueState:
     def __init__(self, storage: SQLiteStorage) -> None:
         self.storage = storage
@@ -154,7 +163,7 @@ class IssueState:
                 ).fetchone()
                 if row:
                     return (
-                        NewsItem(**json.loads(row[0])),
+                        _news_item(json.loads(row[0])),
                         tuple(_article(a) for a in json.loads(row[1])),
                     )
             # Before manifests existed, save_article_snapshots already saved
@@ -214,7 +223,7 @@ class IssueState:
         return tuple(
             (
                 day,
-                NewsItem(**json.loads(item)),
+                _news_item(json.loads(item)),
                 tuple(_article(a) for a in json.loads(articles)),
             )
             for day, item, articles in rows

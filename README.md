@@ -6,8 +6,9 @@ Scout 是单一 owner 自用的 AI 新闻个性化工具。它从
 按原顺序发送完整飞书卡片；`不推荐` 收在当期末尾的标题勾选列表中。勾选多条后
 点击“推送所选正文”，即可在同一个群按原顺序收到正文和当时的判断理由。
 
-Scout 不抓新闻原文，不接知乎或其他信源，不使用 embedding、向量数据库、数值
-兴趣分，也不做多用户产品设计。权威行为见 [Scout 规格](docs/scout-spec.md)。
+橘鸦业务只使用 RSS 内容，不使用 embedding、向量数据库、数值兴趣分，也不做
+多用户产品设计。另有独立的[知乎本机采集](docs/zhihu-validation.md)：通过本机
+HTTP 采集正文，按规则筛选并保存发送快照。权威行为见 [Scout 规格](docs/scout-spec.md)。
 
 ## 准备
 
@@ -245,3 +246,17 @@ git diff --check
 窗口的未知结果重试仍可能重复；普通新闻及档案通知在远端成功后才本地记账，
 这一间隙中断也可能导致重试重复。真实验收要求见
 [规格](docs/scout-spec.md#9-工程检查与验证边界)。
+
+## 知乎本机采集
+
+独立入口 `python -m scout.zhihu` 提供 `status`、`scan`、`score`、`preview`
+和 `send-results`。本机 MediaCrawler 采集器以独立项目、环境和用户服务运行，
+Scout 只通过 HTTP 接入；登录使用采集器的 Cookie 文件导入，`scan` 保存证据和报告，
+现有 listener 的后台扫描线程负责任务恢复。
+
+按配置搜索知乎完整正文，当前发送入口要求正文讨论 GPT-6 模型且含字面“斩杀线”，
+最多按发现顺序推送 5 篇。`send-results` 前保存正文语境核对，随后固定内容、规则、
+证据、目标群和 UUID，成功文章重复执行跳过。采集采用单次任务，没有周期采集 timer。
+
+部署、命令和恢复说明见[知乎本机采集](docs/zhihu-validation.md)，Cookie 登录操作见
+[Cookie 文件导入](docs/zhihu-cookie-import.md)。

@@ -1,0 +1,56 @@
+# 仅本次单次采集；scan 不授权自动发送。
+[scan]
+max_unique = 200
+max_results = 5
+detail_batch_size = 5
+
+[[scan.queries]]
+query = "GPT-6 斩杀线"
+sort = "general"
+max_pages = 3
+
+[[scan.queries]]
+query = "GPT6 斩杀线"
+sort = "general"
+max_pages = 3
+
+[[scan.queries]]
+query = "GPT 6 斩杀线"
+sort = "general"
+max_pages = 3
+
+[[scan.queries]]
+query = "GPT-6"
+sort = "general"
+max_pages = 3
+
+[[scan.queries]]
+query = "GPT-6"
+sort = "latest"
+max_pages = 3
+
+[[scan.queries]]
+query = "GPT6"
+sort = "general"
+max_pages = 3
+
+[[scan.queries]]
+query = "GPT6"
+sort = "latest"
+max_pages = 3
+
+[[scan.queries]]
+query = "斩杀线"
+sort = "general"
+max_pages = 3
+
+[[scan.queries]]
+query = "斩杀线"
+sort = "latest"
+max_pages = 3
+
+[rules]
+fields = ["body"]
+regex = ['(?<![A-Za-z0-9])gpt[\s\-‐‑–—]*6(?![A-Za-z0-9]|\.\d)']
+keywords = [{ text = "斩杀线", weight = 1 }]
+threshold = 1
