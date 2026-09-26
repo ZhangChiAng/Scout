@@ -1,0 +1,44 @@
+--- a/adapter/collector/app.py
++++ b/adapter/collector/app.py
+@@ -255,7 +255,7 @@
+                 if answer_id in seen:
+                     continue
+                 rank = len(seen) + 1
+-                item = record({
++                seed = {
+                     "content_type": "answer", "content_id": answer_id,
+                     "url": f"https://www.zhihu.com/question/{question_id}/answer/{answer_id}",
+                     "question_id": question_id, "list_rank": rank,
+@@ -267,7 +267,17 @@
+                         "collected_at": collected_at,
+                         "result_index": rank, "request_uri": request_uri,
+                     },
+-                }, entity)
++                }
++                item = record(seed, entity)
++                # Only the verified normal, untruncated list format may provide a body.
++                # Ambiguous flags keep the same candidate and fall back to a detail task.
++                if (entity.get("answer_type") == "normal"
++                        and entity.get("is_normal") is True
++                        and entity.get("content_need_truncated") is False):
++                    full = detail_record({**seed, "evidence": []}, entity, proof,
++                                         "question_answers_api.v4.answers")
++                    if full["status"] == "body" and full["completeness"]["verified"]:
++                        item = full
+                 item["fetched_at"] = collected_at
+                 additions.append(item)
+                 seen.add(answer_id)
+--- a/adapter/collector/browser.py
++++ b/adapter/collector/browser.py
+@@ -374,8 +374,9 @@
+     async def question_answers(self, question_id, run_id, next_uri=None):
+         # Preserve the server's default ranking and next-page cursor verbatim.
+         params = {
+-            "include": "data[*].excerpt,author,question,created_time,updated_time,is_normal",
+-            "limit": 5, "offset": 0, "platform": "desktop", "sort_by": "default",
++            "include": "data[*].content,excerpt,author,question,created_time,updated_time,"
++                       "is_normal,paid_info,is_paid,is_truncated,is_limited,content_need_truncated,answer_type",
++            "limit": 20, "offset": 0, "platform": "desktop", "sort_by": "default",
+         }
+         uri = next_uri or f"/api/v4/questions/{question_id}/answers?" + urlencode(params)
+         data, evidence = await self.request(uri, save_run=run_id)

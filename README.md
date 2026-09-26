@@ -8,7 +8,7 @@ Scout 是单一 owner 自用的 AI 新闻个性化工具。它从
 
 橘鸦业务只使用 RSS 内容，不使用 embedding、向量数据库、数值兴趣分，也不做
 多用户产品设计。另有独立的[知乎本机采集](docs/zhihu-validation.md)：通过本机
-HTTP 采集正文，按配置筛选，自动发送标题和原文链接。权威行为见 [Scout 规格](docs/scout-spec.md)。
+HTTP 搜索和扩展同题前 20 个回答，按飞书配置的话题、时间范围和独立学习偏好发送交互卡片。权威行为见 [Scout 规格](docs/scout-spec.md)。
 
 ## 准备
 
@@ -316,18 +316,28 @@ GPT-6 Sol 的 medium 推理和 Fast 速度。使用真实未缓存新闻执行�
 这一间隙中断也可能导致重试重复。真实验收要求见
 [规格](docs/scout-spec.md#9-工程检查与验证边界)。
 
-## 知乎本机采集
+## 知乎话题与反馈学习
 
-独立入口 `python -m scout.zhihu` 提供 `status`、`scan`、`score`、`preview`
-和 `send-results`。本机 MediaCrawler 采集器以独立项目、环境和用户服务运行，
-Scout 只通过 HTTP 接入；登录使用采集器的 Cookie 文件导入，`scan` 保存证据和报告，
-现有 listener 的后台扫描线程负责任务恢复。
+先升级独立采集器，再重启 listener，并向已配置的飞书群发送管理卡：
 
-按配置搜索知乎完整正文，当前发送入口要求正文讨论 GPT-6 模型且含字面“斩杀线”，
-最多按发现顺序推送 5 篇。`send-results` 前保存正文语境核对，随后固定内容、规则、
-证据、目标群和 UUID，成功文章重复执行跳过。采集采用单次任务，没有周期采集 timer。
+```bash
+uv run --locked python -m scout.zhihu manage
+```
 
-部署、命令和恢复说明见[知乎本机采集](docs/zhihu-validation.md)，Cookie 登录操作见
-[Cookie 文件导入](docs/zhihu-cookie-import.md)。
+在卡片配置话题名称、搜索词和近 7 天/近 30 天/不限，默认近 30 天。搜索词忽略大小写并去重，
+分别执行最新和综合搜索；每个话题最多 200 个直接命中种子，再扩展同问题默认前 20 个不同回答。
+原种子保留，列表固定后不因筛除而补第 21 个。完整正文按时间和独立学习偏好筛选，每轮最多
+发送 10 篇内容卡片，按分数降序、同分较新优先。校准阶段同样最多 10 篇。
 
-配置格式与知乎旧命令的迁移步骤见 [重构迁移说明](docs/refactor-migration.md)。
+“喜欢”直接保存；“不喜欢”需填写正文中字面出现的降权关键词，支持修改反馈和过滤结果补标。
+知乎各话题共用一份偏好，与橘鸦档案独立。每日扫描默认关闭，启用时必须填写执行时刻。
+采集和投递持久化恢复，回答/文章按稳定 ID 全局去重，旧任务保留原消息格式。
+
+`python -m scout.zhihu` 提供 `manage/topics/status/scan/retry-cards/score`；
+新扫描使用 `scan --topic-id <ID>`，旧任务用 `scan --run-id <UUID>` 恢复。
+`score` 仅用于旧规则报告诊断。采集器单独部署，Scout 只通过本机 HTTP 接入。
+
+部署、命令、学习规则和恢复说明见 [知乎说明](docs/zhihu-validation.md)，Cookie 登录见
+[导入说明](docs/zhihu-cookie-import.md)，已覆盖和未覆盖的真实场景见
+[本轮验收报告](docs/zhihu-topics-acceptance.md)。历史配置迁移记录见
+[重构迁移说明](docs/refactor-migration.md)。

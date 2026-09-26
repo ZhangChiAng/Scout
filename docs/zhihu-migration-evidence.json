@@ -1,0 +1,48 @@
+{
+  "database": "data/scout.sqlite3",
+  "backup": "data/scout-before-zhihu-topics-1790424781270044306.sqlite3",
+  "integrity": "ok",
+  "foreign_key_violations": 0,
+  "legacy_tables": {
+    "article_snapshots": {
+      "before": 443,
+      "after": 443,
+      "original_rows_preserved": true
+    },
+    "feedback_revisions": {
+      "before": 46,
+      "after": 46,
+      "original_rows_preserved": true
+    },
+    "preference_profiles": {
+      "before": 20,
+      "after": 20,
+      "original_rows_preserved": true
+    },
+    "rule_test_deliveries": {
+      "before": 3,
+      "after": 3,
+      "original_rows_preserved": true
+    },
+    "zhihu_scans": {
+      "before": 1,
+      "after": 1,
+      "original_rows_preserved": true
+    },
+    "zhihu_link_deliveries": {
+      "before": 0,
+      "after": 0,
+      "original_rows_preserved": true
+    }
+  },
+  "management_deliveries": [
+    {
+      "id": 1,
+      "send_uuid": "2ab10f66-111c-46d8-b98a-87b51042c919",
+      "status": "delivered",
+      "attempts": 1,
+      "message_id": "om_x100b644f37d0b8a4b26f388276de05c"
+    }
+  ],
+  "topics": []
+}

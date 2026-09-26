@@ -1,0 +1,221 @@
+{
+  "question_id": "2079174485035282663",
+  "request_uri": "/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.content%2Cexcerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal%2Cpaid_info%2Cis_paid%2Cis_truncated%2Cis_limited%2Ccontent_need_truncated%2Canswer_type&limit=20&offset=0&platform=desktop&sort_by=default",
+  "evidence": {
+    "path": "/v1/evidence/276abdd416d3493abafc4f95409293fa",
+    "sha256": "6ada6562650ac7aab1370d5b1f699b3a0018942cc3eee22da09bc9e1eedf61e5"
+  },
+  "count": 20,
+  "ordered_ids": [
+    "2079952871974507828",
+    "2079731555904374636",
+    "2079343065207157220",
+    "2079270899648354050",
+    "2079214302687503102",
+    "2080054751614464664",
+    "2079713699963715729",
+    "2079642490278355748",
+    "2079217782982558365",
+    "2079541679607002474",
+    "2079665546237305569",
+    "2082223566527934915",
+    "2079972259414929678",
+    "2079206232297042233",
+    "2079231305540166732",
+    "2079988832934572393",
+    "2079552533077431802",
+    "2079682839805686540",
+    "2079915719379136594",
+    "2080241754410952511"
+  ],
+  "paging": {
+    "is_end": false,
+    "is_start": false,
+    "next": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.content%2Cexcerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal%2Cpaid_info%2Cis_paid%2Cis_truncated%2Cis_limited%2Ccontent_need_truncated%2Canswer_type&limit=20&offset=21&platform=desktop&sort_by=default",
+    "previous": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.content%2Cexcerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal%2Cpaid_info%2Cis_paid%2Cis_truncated%2Cis_limited%2Ccontent_need_truncated%2Canswer_type&limit=20&offset=0&platform=desktop&sort_by=default",
+    "totals": 53
+  },
+  "same_order_as_four_page_capture": true,
+  "items": [
+    {
+      "id": "2079952871974507828",
+      "content_chars": 113,
+      "flags": {
+        "answer_type": "normal",
+        "is_normal": true,
+        "content_need_truncated": false
+      }
+    },
+    {
+      "id": "2079731555904374636",
+      "content_chars": 157,
+      "flags": {
+        "answer_type": "normal",
+        "is_normal": true,
+        "content_need_truncated": false
+      }
+    },
+    {
+      "id": "2079343065207157220",
+      "content_chars": 10239,
+      "flags": {
+        "answer_type": "normal",
+        "is_normal": true,
+        "content_need_truncated": false
+      }
+    },
+    {
+      "id": "2079270899648354050",
+      "content_chars": 493,
+      "flags": {
+        "answer_type": "normal",
+        "is_normal": true,
+        "content_need_truncated": false
+      }
+    },
+    {
+      "id": "2079214302687503102",
+      "content_chars": 8520,
+      "flags": {
+        "answer_type": "normal",
+        "is_normal": true,
+        "content_need_truncated": false
+      }
+    },
+    {
+      "id": "2080054751614464664",
+      "content_chars": 1070,
+      "flags": {
+        "answer_type": "normal",
+        "is_normal": true,
+        "content_need_truncated": false
+      }
+    },
+    {
+      "id": "2079713699963715729",
+      "content_chars": 124,
+      "flags": {
+        "answer_type": "normal",
+        "is_normal": true,
+        "content_need_truncated": false
+      }
+    },
+    {
+      "id": "2079642490278355748",
+      "content_chars": 3762,
+      "flags": {
+        "answer_type": "normal",
+        "is_normal": true,
+        "content_need_truncated": false
+      }
+    },
+    {
+      "id": "2079217782982558365",
+      "content_chars": 2480,
+      "flags": {
+        "answer_type": "normal",
+        "is_normal": true,
+        "content_need_truncated": false
+      }
+    },
+    {
+      "id": "2079541679607002474",
+      "content_chars": 34268,
+      "flags": {
+        "answer_type": "normal",
+        "is_normal": true,
+        "content_need_truncated": false
+      }
+    },
+    {
+      "id": "2079665546237305569",
+      "content_chars": 280,
+      "flags": {
+        "answer_type": "normal",
+        "is_normal": true,
+        "content_need_truncated": false
+      }
+    },
+    {
+      "id": "2082223566527934915",
+      "content_chars": 124,
+      "flags": {
+        "answer_type": "normal",
+        "is_normal": true,
+        "content_need_truncated": false
+      }
+    },
+    {
+      "id": "2079972259414929678",
+      "content_chars": 268,
+      "flags": {
+        "answer_type": "normal",
+        "is_normal": true,
+        "content_need_truncated": false
+      }
+    },
+    {
+      "id": "2079206232297042233",
+      "content_chars": 6586,
+      "flags": {
+        "answer_type": "normal",
+        "is_normal": true,
+        "content_need_truncated": false
+      }
+    },
+    {
+      "id": "2079231305540166732",
+      "content_chars": 1257,
+      "flags": {
+        "answer_type": "normal",
+        "is_normal": true,
+        "content_need_truncated": false
+      }
+    },
+    {
+      "id": "2079988832934572393",
+      "content_chars": 1036,
+      "flags": {
+        "answer_type": "normal",
+        "is_normal": true,
+        "content_need_truncated": false
+      }
+    },
+    {
+      "id": "2079552533077431802",
+      "content_chars": 5865,
+      "flags": {
+        "answer_type": "normal",
+        "is_normal": true,
+        "content_need_truncated": false
+      }
+    },
+    {
+      "id": "2079682839805686540",
+      "content_chars": 45,
+      "flags": {
+        "answer_type": "normal",
+        "is_normal": true,
+        "content_need_truncated": false
+      }
+    },
+    {
+      "id": "2079915719379136594",
+      "content_chars": 250,
+      "flags": {
+        "answer_type": "normal",
+        "is_normal": true,
+        "content_need_truncated": false
+      }
+    },
+    {
+      "id": "2080241754410952511",
+      "content_chars": 315,
+      "flags": {
+        "answer_type": "normal",
+        "is_normal": true,
+        "content_need_truncated": false
+      }
+    }
+  ]
+}

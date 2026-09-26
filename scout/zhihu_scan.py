@@ -12,7 +12,7 @@ from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import zhihu_delivery
+from . import zhihu_delivery, zhihu_store
 from .config import ConfigError, resolve_feishu_delivery
 from .database import connect
 from .locking import RunLockedError, sender_lock
@@ -43,6 +43,7 @@ class ZhihuScanWorker:
     def start(self) -> None:
         with sender_lock(self.path):
             zhihu_delivery.initialize(self.path)
+            zhihu_store.initialize(self.path)
         self.thread.start()
 
     def close(self) -> None:
@@ -186,9 +187,64 @@ def _save(database_path, state):
             "UPDATE zhihu_scans SET status=?,state_json=? WHERE id=?",
             (state["status"], _json(state), state["id"]),
         )
+        if state.get("schema_version") == 2:
+            key = "register_scan:" + state["id"]
+            if state["status"] in {"completed", "partial_failed"} and not state.get(
+                "delivery_registered"
+            ):
+                conn.execute(
+                    "INSERT OR REPLACE INTO zhihu_settings VALUES (?,?)",
+                    (key, _json(state["id"])),
+                )
+            else:
+                conn.execute("DELETE FROM zhihu_settings WHERE key=?", (key,))
+
+
+def resume_collection(database_path, scan_id):
+    """Explicitly retry a transport interruption using its original remote task."""
+    path = Path(database_path)
+    with path.with_suffix(path.suffix + ".zhihu-scan.lock").open("a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        state = get_scan(path, scan_id)
+        if (
+            not state
+            or state["status"] not in {"failed", "partial_failed"}
+            or not state.get("active")
+        ):
+            return
+        if (state.get("last_error") or {}).get("kind") not in {"network", "http_error"}:
+            return
+        state.setdefault("recovery_history", []).append(state["last_error"])
+        state["errors"] = [
+            error
+            for error in state["errors"]
+            if error.get("kind") not in {"network", "http_error"}
+        ]
+        for coverage in state["coverage"]:
+            if (
+                coverage.get("status") == "unverified"
+                and coverage.get("operation") == state["active"]
+            ):
+                coverage["status"] = "retrying"
+        state.update(
+            status="running",
+            retry_count=0,
+            next_retry_at=0,
+            last_error=None,
+            stop_reason="",
+            delivery_registered=False,
+        )
+        _save(path, state)
 
 
 def summary(state):
+    if state.get("schema_version") == 2:
+        from .zhihu_topic_scan import summary as topic_summary
+
+        return topic_summary(state)
     rules = Rules.load(state["config"]["rules"])
     results = [evaluate_article(record, rules) for record in state["records"]]
     return {
@@ -213,6 +269,10 @@ def summary(state):
 
 
 def export_report(state, rules=None):
+    if state.get("schema_version") == 2:
+        from .zhihu_topic_scan import export_report as topic_report
+
+        return topic_report(state)
     directory = Path(state["directory"])
     rules = rules or Rules.load(state["config"]["rules"])
     records = state["records"]
@@ -295,6 +355,10 @@ def _next(state):
 
 
 def _tick(database_path, state, client):
+    if state.get("schema_version") == 2:
+        from .zhihu_topic_scan import tick
+
+        return tick(database_path, state, client)
     if state["status"] in TERMINAL:
         return
     if state["active"] is None:
@@ -452,6 +516,28 @@ def _resume_scan(database_path):
             row = conn.execute(
                 "SELECT state_json FROM zhihu_scans WHERE status IN ('running','waiting_login') ORDER BY created_at LIMIT 1"
             ).fetchone()
+            terminal = conn.execute(
+                """SELECT s.state_json FROM zhihu_settings pending
+                JOIN zhihu_scans s ON s.id=json_extract(pending.value_json,'$')
+                WHERE pending.key LIKE 'register_scan:%' ORDER BY s.created_at LIMIT 1"""
+            ).fetchall()
+        # A crash after the final scan snapshot but before reservation must still
+        # register its selected cards. Registration is identity-idempotent.
+        for saved in terminal:
+            completed = json.loads(saved[0])
+            if completed.get("schema_version") == 2 and not completed.get(
+                "delivery_registered"
+            ):
+                try:
+                    with sender_lock(path):
+                        completed["registered_links"] = zhihu_delivery.register(
+                            path, completed
+                        )
+                        completed["delivery_registered"] = True
+                        _save(path, completed)
+                        export_report(completed)
+                except RunLockedError:
+                    return
         if not row:
             return
         state = json.loads(row[0])
@@ -461,7 +547,16 @@ def _resume_scan(database_path):
             with sender_lock(path):
                 state["registered_links"] = zhihu_delivery.register(path, state)
                 _save(path, state)
-            _tick(path, state, CollectorClient.from_env())
+            client = CollectorClient.from_env()
+            _tick(path, state, client)
+            if (
+                state.get("schema_version") == 2
+                and state["status"] == "running"
+                and state["active"] is None
+            ):
+                # A completed operation is already durable. Start its successor
+                # now instead of adding an idle polling interval per question.
+                _tick(path, state, client)
             with sender_lock(path):
                 state["registered_links"] = zhihu_delivery.register(path, state)
                 _save(path, state)
@@ -501,6 +596,26 @@ def _resume_scan(database_path):
                 )
                 state["status"] = "partial_failed" if state["records"] else "failed"
                 state["stop_reason"] = "collector_error"
+                active = state.get("active") or {}
+                if (
+                    state.get("schema_version") == 2
+                    and active.get("payload", {}).get("kind") == "question_answers"
+                ):
+                    qid = active["payload"]["question_id"]
+                    question = state["questions"][qid]
+                    question["status"] = "failed"
+                    zhihu_store.save_expansion(
+                        path,
+                        state["id"],
+                        qid,
+                        question["request_uuid"],
+                        status="failed",
+                        progress={
+                            "collector_run_id": active.get("collector_id"),
+                            "coverage": active.get("remote_coverage", []),
+                        },
+                        error=state["last_error"]["message"],
+                    )
             _save(path, state)
             export_report(state)
 
@@ -510,6 +625,9 @@ def resume_pending(database_path):
     if not Path(database_path).exists():
         return
     try:
+        from .zhihu_workflow import work
+
+        work(database_path)
         _resume_scan(database_path)
     finally:
         # Terminal scans still have durable links to finish after a restart.
@@ -528,12 +646,18 @@ def _fetch_evidence(client, state, entries):
             raise CollectorError("protocol", "无效证据哈希")
         name = f"raw/{sha}.json"
         local = Path(state["directory"]) / name
-        content = (
-            local.read_bytes() if local.exists() else client.evidence(entry["path"])
-        )
+        content = local.read_bytes() if local.exists() else None
+        cached = content is not None and hashlib.sha256(content).hexdigest() == sha
+        if not cached:
+            # A process can stop midway through an older evidence write. Fetch
+            # the same immutable hash again instead of treating it as new content.
+            content = client.evidence(entry["path"])
         if hashlib.sha256(content).hexdigest() != sha:
             raise CollectorError("protocol", "采集证据哈希不符")
         content.decode("utf-8")
-        local.write_bytes(content)
+        if not cached:
+            temporary = local.with_suffix(local.suffix + f".{uuid.uuid4().hex}.tmp")
+            temporary.write_bytes(content)
+            temporary.replace(local)
         names.append(name)
     return names

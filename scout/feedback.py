@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import http
 import logging
-import os
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -43,6 +43,7 @@ from .notifier import (
 )
 from .reveal import RevealWorker
 from .storage import FeedbackError, SQLiteStorage
+from .zhihu_actions import ZhihuActionHandler
 from .zhihu_scan import ZhihuScanWorker
 
 
@@ -108,6 +109,9 @@ class FeedbackHandler:
         self.max_payload_bytes = max_payload_bytes
         self.issue_state = IssueState(storage)
         self.wake_reveal = wake_reveal
+        self.zhihu = ZhihuActionHandler(
+            storage.path, max_payload_bytes=max_payload_bytes
+        )
 
     def __call__(self, callback: P2CardActionTrigger) -> P2CardActionTriggerResponse:
         try:
@@ -132,6 +136,21 @@ class FeedbackHandler:
         )
         message_id = context.open_message_id if context is not None else ""
         open_id = operator.open_id if operator is not None else ""
+        if str(value.get("action", "")).startswith("zhihu_"):
+            event_id = getattr(callback.header, "event_id", "") or ""
+            if not event_id and event is not None and event.token:
+                # Card update tokens are opaque and must not be stored as event IDs.
+                event_id = hashlib.sha256(event.token.encode()).hexdigest()
+            return _response(
+                **self.zhihu.handle(
+                    value,
+                    form=action.form_value if action is not None else None,
+                    message_id=message_id or "",
+                    chat_id=(context.open_chat_id or "") if context is not None else "",
+                    open_id=open_id or "",
+                    event_id=event_id,
+                )
+            )
         if value.get("action") == "reveal_selected":
             count = self.issue_state.enqueue(
                 list_id=_positive_int(value.get("list_id"), "list_id"),
@@ -228,11 +247,7 @@ def listen_feedback(
         FeishuNotifier(delivery, timeout_seconds),
         max_payload_bytes=max_payload_bytes,
     )
-    scan_worker = (
-        ZhihuScanWorker(database_path)
-        if os.environ.get("ZHIHU_COLLECTOR_URL")
-        else None
-    )
+    scan_worker = ZhihuScanWorker(database_path)
     callback = FeedbackHandler(
         storage,
         max_payload_bytes=max_payload_bytes,

@@ -1,0 +1,1608 @@
+--- a/adapter/collector/app.py
++++ b/adapter/collector/app.py
+@@ -8,7 +8,7 @@
+ from contextlib import asynccontextmanager
+ from pathlib import Path
+ from typing import Literal
+-from urllib.parse import urlsplit
++from urllib.parse import parse_qs, urlsplit
+ from uuid import UUID, uuid4
+ 
+ from fastapi import Depends, FastAPI, Header, HTTPException
+@@ -25,9 +25,11 @@
+ class RunRequest(BaseModel):
+     model_config = ConfigDict(extra="forbid")
+     request_uuid: UUID
+-    kind: Literal["search", "detail"]
++    kind: Literal["search", "detail", "question_answers"]
+     query: str | None = Field(default=None, max_length=200)
+-    sort: Literal["general", "latest"] = "general"
++    sort: Literal["general", "latest", "default"] = "general"
++    question_id: str | None = Field(default=None, pattern=r"^[0-9]+$")
++    limit: int = Field(default=20, ge=20, le=20)
+     max_pages: int = Field(default=3, ge=1, le=3)
+     items: list[dict] = Field(default_factory=list, max_length=200)
+ 
+@@ -35,6 +37,13 @@
+     def validate_kind(self):
+         if self.kind == "search" and (not self.query or not self.query.strip() or self.items):
+             raise ValueError("search requires query and no detail items")
++        if self.kind == "search" and self.sort not in {"general", "latest"}:
++            raise ValueError("search requires general/latest sort")
++        if self.kind == "question_answers":
++            if not self.question_id or self.sort != "default" or self.query or self.items:
++                raise ValueError("question_answers requires question_id, sort=default and no query/items")
++        elif self.question_id:
++            raise ValueError("question_id is only accepted by question_answers")
+         if self.kind == "detail":
+             if not self.items:
+                 raise ValueError("detail requires items")
+@@ -78,12 +87,18 @@
+         self.store.put("run", run["id"], run)
+ 
+     def public(self, run):
+-        return {k: v for k, v in run.items() if k not in {"request", "progress"}}
++        result = {k: v for k, v in run.items() if k not in {"request", "progress"}}
++        if run["kind"] == "question_answers":
++            result["progress"] = run["progress"]
++        return result
+ 
+     def submit(self, request):
+         payload = request.model_dump(mode="json")
+         for previous in self.store.all("run"):
+             if previous["request_uuid"] == payload["request_uuid"]:
++                old = RunRequest.model_validate(previous["request"]).model_dump(mode="json")
++                if old != payload:
++                    raise HTTPException(409, "Request UUID already bound to another payload")
+                 return self.public(previous)
+         run = {
+             "id": str(uuid4()), "request_uuid": payload["request_uuid"], "kind": payload["kind"],
+@@ -158,6 +173,8 @@
+             self.save(run)
+             if run["kind"] == "search":
+                 await self.search(run)
++            elif run["kind"] == "question_answers":
++                await self.question_answers(run)
+             else:
+                 await self.details(run)
+         except FetchProblem as exc:
+@@ -178,6 +195,11 @@
+                                     "stop_reason": exc.kind, "failure": exc.payload()}]
+             else:
+                 run["coverage"][-1].update(stop_reason=exc.kind, failure=exc.payload())
++            if run["kind"] == "question_answers":
++                run["coverage"][-1].update(
++                    complete=False, question_id=run["request"]["question_id"],
++                    actual_count=len(self.store.records(run["id"])),
++                )
+             evidence = self.store.evidence(run["id"], json.dumps({
+                 "run_id": run["id"], "fetched_at": now(), "error": exc.payload(),
+                 "coverage": run["coverage"],
+@@ -186,7 +208,115 @@
+             self.save(run)
+         except Exception as exc:
+             run.update(status="failed", error={"kind": "internal", "message": f"Collector failure: {type(exc).__name__}"})
+-            self.save(run)
++            if run["kind"] == "question_answers":
++                for coverage in run["coverage"]:
++                    coverage.update(complete=False, stop_reason="internal", failure=run["error"])
++            self.save(run)
++
++    async def question_answers(self, run):
++        req, progress = run["request"], run["progress"]
++        question_id = req["question_id"]
++        coverage = run["coverage"][0] if run["coverage"] else {}
++        coverage.update(question_id=question_id, sort="default", limit=20,
++                        complete=False, stop_reason=None, failure=None)
++        coverage.setdefault("pages", 0)
++        coverage.setdefault("raw_count", 0)
++        coverage.setdefault("evidence", [])
++        run["coverage"] = [coverage]
++        # A crash after the terminal page commit must not request another page.
++        if progress.get("finished"):
++            coverage.update(complete=True, stop_reason=progress["stop_reason"])
++            run.update(status="completed", error=None)
++            self.save(run)
++            return
++        existing = self.store.records(run["id"])
++        seen = {item["content_id"] for item in existing}
++        while len(seen) < 20:
++            if coverage["pages"] >= 100:
++                raise FetchProblem("pagination_limit", "Default list exceeded 100 pages before 20 unique answers")
++            data, proof, request_uri = await self.browser.question_answers(
++                question_id, run["id"], progress.get("next_uri")
++            )
++            run.setdefault("evidence", []).append(proof)
++            if not isinstance(data, dict) or not isinstance(data.get("data"), list):
++                raise FetchProblem("invalid_response", "Question answers response has no ordered list")
++            collected_at = now()
++            additions = []
++            for entity in data["data"]:
++                if not isinstance(entity, dict):
++                    raise FetchProblem("invalid_response", "Question list includes a malformed answer")
++                answer_id = str(entity.get("id", ""))
++                if entity.get("type") != "answer" or not answer_id.isdigit():
++                    raise FetchProblem("invalid_response", "Question list includes a non-answer entity")
++                parent = entity.get("question") or {}
++                actual_question = str(parent.get("id", question_id)) if isinstance(parent, dict) else str(parent)
++                if actual_question != question_id:
++                    raise FetchProblem("invalid_response", "Question list answer belongs to another question")
++                if answer_id in seen:
++                    continue
++                rank = len(seen) + 1
++                seed = {
++                    "content_type": "answer", "content_id": answer_id,
++                    "url": f"https://www.zhihu.com/question/{question_id}/answer/{answer_id}",
++                    "question_id": question_id, "list_rank": rank,
++                    "list_fetched_at": collected_at,
++                    "discovery_source": "question_default", "evidence": [proof],
++                    "first_discovery": {
++                        "source": "question_default", "question_id": question_id,
++                        "sort": "default", "list_rank": rank, "page": coverage["pages"] + 1,
++                        "collected_at": collected_at,
++                        "result_index": rank, "request_uri": request_uri,
++                    },
++                }
++                item = record(seed, entity)
++                # Only the verified normal, untruncated list format may provide a body.
++                # Ambiguous flags keep the same candidate and fall back to a detail task.
++                if (entity.get("answer_type") == "normal"
++                        and entity.get("is_normal") is True
++                        and entity.get("content_need_truncated") is False):
++                    full = detail_record({**seed, "evidence": []}, entity, proof,
++                                         "question_answers_api.v4.answers")
++                    if full["status"] == "body" and full["completeness"]["verified"]:
++                        item = full
++                item["fetched_at"] = collected_at
++                additions.append(item)
++                seen.add(answer_id)
++                if len(seen) == 20:
++                    break
++            paging = data.get("paging") or {}
++            if not isinstance(paging, dict):
++                raise FetchProblem("invalid_response", "Question list paging is malformed")
++            ended = paging.get("is_end") is True
++            terminal = len(seen) == 20 or ended
++            next_uri = None
++            if not terminal:
++                link = urlsplit(paging.get("next") or "")
++                values = parse_qs(link.query)
++                if (link.netloc not in {"", "www.zhihu.com"}
++                        or link.scheme not in {"", "http", "https"}
++                        or link.path != f"/api/v4/questions/{question_id}/answers"
++                        or values.get("sort_by") != ["default"]):
++                    raise FetchProblem("invalid_pagination", "Question list has no valid default-sort next cursor")
++                next_uri = link.path + "?" + link.query
++                if next_uri == request_uri or next_uri in progress.get("visited_uris", []):
++                    raise FetchProblem("pagination_stalled", "Question list repeated a previous cursor")
++            stop_reason = "limit_reached" if len(seen) == 20 else "end_of_list" if ended else None
++            coverage.update(
++                pages=coverage["pages"] + 1, raw_count=coverage["raw_count"] + len(data["data"]),
++                candidates=len(seen), actual_count=len(seen), complete=terminal,
++                stop_reason=stop_reason, fetched_at=collected_at, next_uri=next_uri,
++                next_offset=parse_qs(urlsplit(next_uri or "").query).get("offset", [None])[0],
++            )
++            coverage["evidence"].append(proof)
++            progress.update(next_page=coverage["pages"] + 1, next_uri=next_uri,
++                            finished=terminal, stop_reason=stop_reason,
++                            visited_uris=[*progress.get("visited_uris", []), request_uri])
++            run["updated_at"] = now()
++            self.store.save_question_page(run, additions)
++            if terminal:
++                break
++        run.update(status="completed", error=None)
++        self.save(run)
+ 
+     async def search(self, run):
+         req = run["request"]
+@@ -329,6 +459,7 @@
+     async def health():
+         return {"protocol_version": PROTOCOL_VERSION, "upstream_version": UPSTREAM_COMMIT,
+                 "status": "running", "headless": True, "cdp": False,
++                "capabilities": ["search", "detail", "question_answers"],
+                 "pending_runs": sum(r["status"] in {"running", "waiting_login"} for r in service.store.all("run"))}
+ 
+     @app.post("/v1/runs")
+--- a/adapter/collector/browser.py
++++ b/adapter/collector/browser.py
+@@ -370,3 +370,14 @@
+             "time_interval": "", "sort": "created_time" if sort == "latest" else "", "vertical": "",
+         }
+         return await self.request("/api/v4/search_v3?" + urlencode(params), save_run=run_id)
++
++    async def question_answers(self, question_id, run_id, next_uri=None):
++        # Preserve the server's default ranking and next-page cursor verbatim.
++        params = {
++            "include": "data[*].content,excerpt,author,question,created_time,updated_time,"
++                       "is_normal,paid_info,is_paid,is_truncated,is_limited,content_need_truncated,answer_type",
++            "limit": 20, "offset": 0, "platform": "desktop", "sort_by": "default",
++        }
++        uri = next_uri or f"/api/v4/questions/{question_id}/answers?" + urlencode(params)
++        data, evidence = await self.request(uri, save_run=run_id)
++        return data, evidence, uri
+--- a/adapter/collector/extract.py
++++ b/adapter/collector/extract.py
+@@ -64,8 +64,16 @@
+         author = {}
+     summary = text(entity.get("excerpt") or entity.get("description")) or item.get("summary", "")
+     author_token = author.get("url_token") or author.get("urlToken")
++    question_id = str(question.get("id") or item.get("question_id") or "")
++    if kind == "answer" and not question_id:
++        match = re.match(r"/question/(\d+)/answer/", urlsplit(url).path)
++        question_id = match[1] if match else ""
+     return {
+         "content_id": key, "content_type": kind, "url": url,
++        "question_id": question_id if kind == "answer" else "",
++        "list_rank": item.get("list_rank"),
++        "list_fetched_at": item.get("list_fetched_at"),
++        "discovery_source": item.get("discovery_source", "search" if item.get("first_discovery") else "detail"),
+         "title": text(entity.get("title") or question.get("title")) or item.get("title")
+                  or f"知乎{'回答' if kind == 'answer' else '专栏'} {key}",
+         "author": author.get("name") or item.get("author", ""),
+@@ -120,7 +128,8 @@
+     if isinstance(obj.get("author"), str):
+         obj["author"] = entities.get("users", {}).get(obj["author"], {})
+     if isinstance(obj.get("question"), (str, int)):
+-        obj["question"] = entities.get("questions", {}).get(str(obj["question"]), {})
++        question_id = str(obj["question"])
++        obj["question"] = {"id": question_id, **entities.get("questions", {}).get(question_id, {})}
+     return obj
+ 
+ 
+--- a/adapter/collector/store.py
++++ b/adapter/collector/store.py
+@@ -67,6 +67,24 @@
+                 (run_id, key, len(self.records(run_id)), json.dumps(record, ensure_ascii=False)),
+             )
+ 
++    def save_question_page(self, run: dict, records: list[dict]):
++        """Commit ordered additions and their resume cursor as one SQLite transaction."""
++        with self.db:
++            ordinal = self.db.execute(
++                "SELECT COALESCE(MAX(ordinal),-1)+1 FROM records WHERE run_id=?", (run["id"],)
++            ).fetchone()[0]
++            for item in records:
++                changed = self.db.execute(
++                    "INSERT OR IGNORE INTO records VALUES (?,?,?,?)",
++                    (run["id"], f"{item['content_type']}:{item['content_id']}", ordinal,
++                     json.dumps(item, ensure_ascii=False)),
++                ).rowcount
++                ordinal += changed
++            self.db.execute(
++                "INSERT OR REPLACE INTO docs VALUES ('run',?,?)",
++                (run["id"], json.dumps(run, ensure_ascii=False)),
++            )
++
+     def evidence(self, run_id: str, body: bytes, mime="application/json", expires_at=None):
+         key = uuid4().hex
+         suffix = ".png" if mime == "image/png" else ".json" if mime == "application/json" else ".html"
+--- a/deploy/README.md
++++ b/deploy/README.md
+@@ -133,3 +133,38 @@
+ 输入格式、原任务 ID、Scout 状态与验收覆盖见
+ [Cookie 导入说明](../../scout/docs/zhihu-cookie-import.md)。2026-09-26 已使用真实 Cookie 验证账户、首查询 3 页 60 个候选、两个服务分别重启、
+ 同 UUID 导入幂等及 3 篇目标结果发送。失效回滚、过期及中断仍未覆盖；扫码未成功。
++
++## 默认排序的同题回答扩展
++
++`GET /v1/health` 的 `capabilities` 包含 `question_answers` 后，Scout 才可启用同题扩展。
++新增提交请求：`request_uuid,kind=question_answers,question_id="数字问题ID",limit=20,sort=default`。
++现有 `search/detail` 请求和协议版本保持兼容；回答记录补充 `question_id`。
++同一 UUID 的不同请求参数返回 409，避免错误复用其他问题的结果。
++
++适配器调用 `/api/v4/questions/{question_id}/answers` 并指定 `sort_by=default`，
++按每页原始顺序收集前 20 个不同回答 ID，使用上游返回的默认排序游标继续分页。
++每条记录保存 `list_rank`、`question_id`、`discovery_source=question_default`、采集时间、
++页号和证据引用。列表不按日期、赞同数重新排序，时间过滤与送达过滤由 Scout 在列表固定后执行。
++每页新记录及下一游标在同一 SQLite 事务提交；重启按原任务 UUID 和游标恢复。
++数据库结构不变，已有搜索/详情任务继续使用原快照。
++
++`records` 仍返回 `{records,coverage}`。扩展 coverage 包含 `question_id,sort,limit,pages,
++raw_count,candidates,actual_count,complete,stop_reason,next_uri,next_offset,fetched_at,evidence`。
++成功的终止原因只有 `limit_reached`（20 个不同回答）或 `end_of_list`（上游 `is_end=true`）。
++缺少游标、循环游标、畸形响应、登录或网络失败均显式报告失败及 `complete=false`，
++不会把不完整覆盖伪装为不足 20 个。单任务异常超过 100 页仍未得到 20 个答案时明确失败。
++使用真实登录会话的验证记录见 `QUESTION_ANSWERS_ACCEPTANCE.md`。
++
++### 默认列表正文复用与分页效率
++
++真实验证后，默认列表首请求改用 `limit=20` 并请求 `content`、付费和截断相关字段。
++上游若返回不足 20 个且未结束，仍严格按原始 next 游标继续，不自行重排或补选名单。
++只有 `answer_type=normal`、`is_normal=true`、`content_need_truncated=false` 都明确存在，
++且现有 `detail_record` 完整性检查通过时，记录才返回 `status=body` 和
++`completeness.basis=question_answers_api.v4.answers:target_entity.content`。
++Scout 可复用这些全文；其他记录继续走既有单篇 detail，不因上述标志直接筛除候选。
++已有任务的持久化 next_uri 保持原值，重启不改变其已固定的列表或记录身份。
++
++5 篇列表正文与独立原文 HTML 正文逐字符一致；20 条单页列表顺序与原 4 页列表逐项一致，
++生产 HTTP 已确认一次取得 5/20 条完整正文。付费样本和 `content_need_truncated=true` 的
++实际含义仍未覆盖，详细边界见 `QUESTION_ANSWERS_ACCEPTANCE.md`。
+--- /dev/null
++++ b/deploy/legacy-restart-results.json
+@@ -0,0 +1,6 @@
++{
++  "prior_runs": 20,
++  "unchanged_run_snapshots": 20,
++  "unchanged_record_sets": 20,
++  "current_integrity_check": "ok"
++}
+--- /dev/null
++++ b/deploy/question-answers-evidence.json
+@@ -0,0 +1,197 @@
++[
++  {
++    "run_id": "1981d64d-b6a7-452f-9f5c-e449e33d8c38",
++    "question_id": "2085925368972698066",
++    "status": "completed",
++    "count": 5,
++    "complete": true,
++    "stop_reason": "end_of_list",
++    "ordered_ids_match_raw_response": true,
++    "rank_is_contiguous": true,
++    "evidence_sha256_valid": true,
++    "all_question_ids_match": true,
++    "pages": [
++      {
++        "ordered_answer_ids": [
++          "2086049693201704610",
++          "2086509931201557499",
++          "2086360090693603505",
++          "2086054014299398962",
++          "2085977074137837942"
++        ],
++        "paging": {
++          "is_end": true,
++          "is_start": true,
++          "next": "https://www.zhihu.com/api/v4/questions/2085925368972698066/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=5&platform=desktop&sort_by=default",
++          "previous": "https://www.zhihu.com/api/v4/questions/2085925368972698066/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=0&platform=desktop&sort_by=default",
++          "totals": 5
++        },
++        "sha256": "af5996f8b06b9304d64537f40e54002a0b029ee1d27ead14fc43719a5787e4c1"
++      }
++    ]
++  },
++  {
++    "run_id": "50309aef-66c1-400e-8de6-ba81c170357f",
++    "question_id": "2079174485035282663",
++    "status": "completed",
++    "count": 20,
++    "complete": true,
++    "stop_reason": "limit_reached",
++    "ordered_ids_match_raw_response": true,
++    "rank_is_contiguous": true,
++    "evidence_sha256_valid": true,
++    "all_question_ids_match": true,
++    "pages": [
++      {
++        "ordered_answer_ids": [
++          "2079952871974507828",
++          "2079731555904374636",
++          "2079343065207157220",
++          "2079270899648354050",
++          "2079214302687503102"
++        ],
++        "paging": {
++          "is_end": false,
++          "is_start": true,
++          "next": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=5&platform=desktop&sort_by=default",
++          "previous": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=0&platform=desktop&sort_by=default",
++          "totals": 53
++        },
++        "sha256": "ba99fc8829f33b1bbfebc08cc463ded8952ee27e7568c7b598b36621fc287e3b"
++      },
++      {
++        "ordered_answer_ids": [
++          "2080054751614464664",
++          "2079713699963715729",
++          "2079642490278355748",
++          "2079217782982558365",
++          "2079541679607002474"
++        ],
++        "paging": {
++          "is_end": false,
++          "is_start": false,
++          "next": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=10&platform=desktop&sort_by=default",
++          "previous": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=0&platform=desktop&sort_by=default",
++          "totals": 53
++        },
++        "sha256": "3abbf3a9d4d6fd609c8e33d7a73665ed4ff9d25d4792ab645cdfd662750c96dc"
++      },
++      {
++        "ordered_answer_ids": [
++          "2079665546237305569",
++          "2082223566527934915",
++          "2079972259414929678",
++          "2079206232297042233",
++          "2079231305540166732"
++        ],
++        "paging": {
++          "is_end": false,
++          "is_start": false,
++          "next": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=16&platform=desktop&sort_by=default",
++          "previous": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=6&platform=desktop&sort_by=default",
++          "totals": 53
++        },
++        "sha256": "b85cc20bffdee47e93af2fe0593336db82ff55c3e263f395479ae3dec24d1e22"
++      },
++      {
++        "ordered_answer_ids": [
++          "2079988832934572393",
++          "2079552533077431802",
++          "2079682839805686540",
++          "2079915719379136594",
++          "2080241754410952511"
++        ],
++        "paging": {
++          "is_end": false,
++          "is_start": false,
++          "next": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=21&platform=desktop&sort_by=default",
++          "previous": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=11&platform=desktop&sort_by=default",
++          "totals": 53
++        },
++        "sha256": "02470e895d804bf6c543c19f62f3dbbf97b4ac85982c5c6250eafbc72bd7fa8c"
++      }
++    ]
++  },
++  {
++    "run_id": "69fc49f8-14e3-413a-8ad4-e8a3a9e15d49",
++    "question_id": "2079174485035282663",
++    "status": "completed",
++    "count": 20,
++    "complete": true,
++    "stop_reason": "limit_reached",
++    "ordered_ids_match_raw_response": true,
++    "rank_is_contiguous": true,
++    "evidence_sha256_valid": true,
++    "all_question_ids_match": true,
++    "pages": [
++      {
++        "ordered_answer_ids": [
++          "2079952871974507828",
++          "2079731555904374636",
++          "2079343065207157220",
++          "2079270899648354050",
++          "2079214302687503102"
++        ],
++        "paging": {
++          "is_end": false,
++          "is_start": true,
++          "next": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=5&platform=desktop&sort_by=default",
++          "previous": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=0&platform=desktop&sort_by=default",
++          "totals": 53
++        },
++        "sha256": "999d1ceae8e434437180e0630c5687d644628f1f166cde4be3580a2b97b31ce5"
++      },
++      {
++        "ordered_answer_ids": [
++          "2080054751614464664",
++          "2079713699963715729",
++          "2079642490278355748",
++          "2079217782982558365",
++          "2079541679607002474"
++        ],
++        "paging": {
++          "is_end": false,
++          "is_start": false,
++          "next": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=10&platform=desktop&sort_by=default",
++          "previous": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=0&platform=desktop&sort_by=default",
++          "totals": 53
++        },
++        "sha256": "0f2c9fd84ad4c465d72898b3baf9368e89adc9c350d5b180359323a18c80c9fd"
++      },
++      {
++        "ordered_answer_ids": [
++          "2079665546237305569",
++          "2082223566527934915",
++          "2079972259414929678",
++          "2079206232297042233",
++          "2079231305540166732"
++        ],
++        "paging": {
++          "is_end": false,
++          "is_start": false,
++          "next": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=16&platform=desktop&sort_by=default",
++          "previous": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=6&platform=desktop&sort_by=default",
++          "totals": 53
++        },
++        "sha256": "b320a621a92ab7613bf362b02d329a7955d799996333972ed3e253881e8155e4"
++      },
++      {
++        "ordered_answer_ids": [
++          "2079988832934572393",
++          "2079552533077431802",
++          "2079682839805686540",
++          "2079915719379136594",
++          "2080241754410952511"
++        ],
++        "paging": {
++          "is_end": false,
++          "is_start": false,
++          "next": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=21&platform=desktop&sort_by=default",
++          "previous": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=11&platform=desktop&sort_by=default",
++          "totals": 53
++        },
++        "sha256": "31f4c7f77b4baef934016a079511b882638ea4eaf7930c300bb2dcdab1443b4a"
++      }
++    ]
++  }
++]
+--- /dev/null
++++ b/deploy/QUESTION_ANSWERS_ACCEPTANCE.md
+@@ -0,0 +1,83 @@
++# 同题回答扩展的真实采集验收
++
++2026-09-26，先在私有 `/tmp/scout-collector-validation` 中使用已有登录会话、真实 SQLite
++验证暂存版本。用户明确授权“升级采集器并重启服务”后，已备份并升级生产采集器。
++`mediacrawler-scout.service` 重启后 active，健康接口声明 `question_answers`，真实账户复核 verified。
++没有编写单元或模拟测试；本文只记录采集器验收，不替代人工反馈或飞书集成验收。
++
++## 已完成的真实验证
++
++| 场景 | 实际结果 |
++| --- | --- |
++| 有效会话 | 现有 `/v1/login` 返回 verified；每个验证任务通过真实 `/api/v4/me` 核验 |
++| 不足 20 个回答 | 问题 `2085925368972698066` 实际返回 5 个，`paging.is_end=true`，终止原因 `end_of_list` |
++| 默认列表前 20 个 | 问题 `2079174485035282663` 返回总数 53；沿上游游标读取 4 页，取得 20 个不同回答，终止原因 `limit_reached` |
++| 顺序与身份 | 两个问题及恢复任务的候选 ID 顺序逐项等于原始响应首次出现顺序，排名连续，所有 question_id 正确，证据 SHA256 全部匹配 |
++| 真实搜索种子在前 20 个内 | 现有真实搜索“GPT-6 斩杀线”的回答 `2079541679607002474` 位于上述默认列表中 |
++| 分页中断恢复 | 临时进程在第 1 页 5 个记录提交后收到 SIGTERM；新进程以原 UUID 从 offset=5 恢复，得到 20 个，第一页面证据未重取 |
++| 静态检查 | 全量 `ruff check collector` 和 Python AST 解析通过；部署后 `ruff check --no-cache adapter/collector` 通过 |
++| 生产 HTTP 提交 | 真实 POST /v1/runs 分别取得 5 条与 20 条默认列表，结果顺序、排名、问题 ID、证据哈希全部核对一致 |
++| 请求幂等 | 每个任务在运行中及完成后重复提交原 UUID 均返回同一任务；换问题复用 UUID 返回 409 |
++| 升级与存量保存 | SQLite backup 和生产数据库 integrity_check 均为 ok；升级前 20 个存量任务快照及全部记录集合逐项不变 |
++
++历史接口线索来自 [ZhihuHelp archived issue 89](https://github.com/YaoZeyuan/ZhihuHelp_archived/issues/89)。
++实际请求明确包含 `sort_by=default`，后续分页严格采用真实响应的 next URL。
++一次响应的 offset 从 10 跳到 16，因此不能假设 offset 必然按固定步长递增。
++列表记录只保留原顺序，不依据赞同数、时间或过滤结果重选。
++
++## 可追溯记录
++
++- 不足 20 个：运行 `1981d64d-b6a7-452f-9f5c-e449e33d8c38`。
++- 满 20 个：运行 `50309aef-66c1-400e-8de6-ba81c170357f`。
++- 中断恢复：运行 `69fc49f8-14e3-413a-8ad4-e8a3a9e15d49`；请求 UUID `05ee4a50-f788-4ad3-9558-fbe395210f3d`。
++- `question-answers-evidence.json` 包含有序回答 ID、原始 paging、证据 SHA256 与逐项核对结果。
++- 原始响应、SQLite 和恢复前后记录分别位于 `/tmp/scout-collector-validation/data/scout`、
++  `/tmp/scout-collector-validation/real-results.json`、`/tmp/scout-collector-validation/resume-results.json`。
++- 上述临时验收数据已持久化到 `/home/dev/workspace/scout/data/zhihu-collector-validation-20260926`。
++  `tasks.sqlite3` 使用 SQLite backup API 复制，`evidence/` 保留 16 份原始响应；
++  5 份结果 JSON 同目录保存。数据库 integrity_check 和全部登记证据 SHA256 核对通过。
++  归档含 4 个真实任务、50 条记录，目录权限 0700，文件权限 0600；未复制 session、Cookie 或 imports。
++  归档目录由 Git 忽略，清单见该目录 `archive-manifest.json`。已确认没有本次启动的临时验证进程遗留。
++
++## 生产部署记录
++
++SQLite 和原始源码备份目录：
++`/home/dev/workspace/mediacrawler-scout/data/scout/backups/20260926T121527Z-question-answers`。
++补丁原地应用，已有 Cookie 导入相关未提交修改保留。
++
++- 生产 5 条任务：`a89ec91c-0187-4cfc-b185-065896eb7f8d`，请求 `2d05ec2a-e519-5a37-bdc4-3375a2bca0f8`。
++- 生产 20 条任务：`b198a20a-90e4-44fc-93a0-74bedb31f881`，请求 `407feadd-2fae-59f4-ad7d-11963fec0893`。
++- `production-http-results.json` 保存生产能力声明、UUID 幂等结果、分页、原始顺序和证据 SHA256。
++- `legacy-restart-results.json` 保存 20 个存量任务及记录的升级前后逐项比对。
++
++## 默认列表全文与单页 20 条优化
++
++在私有临时实例读取同一真实问题 `2085925368972698066`，增加 `content,paid_info` 等字段后，
++5 篇回答正文与分别读取的原文页 `initialState.entities` 正文逐字符和 SHA256 相同，
++纯文本长度分别为 1193、58、209、1293、19 字符。默认答案顺序及 paging 未改变。
++
++`2079174485035282663` 的首请求使用 `limit=20`，一次返回 20 条，顺序逐项等于此前
++按 5 条取得的 4 页结果。实际 next 指向 offset=21，保持使用服务端游标。
++
++以上 25 条均明确返回 `answer_type=normal,is_normal=true,content_need_truncated=false`。
++即使显式请求，正常回答仍未返回 paid_info 等付费字段；不能据此声称已验收费回答。
++未取得 `content_need_truncated=true` 的真实样本，不能从字段名认定它代表服务器截断或客户端折叠。
++实现仅对以上三个正常条件均成立、正文通过既有 `detail_record` 验证的列表记录提供 `body`。
++其他类型、真值或缺失的标志保留原候选并交给独立 detail，不按该标志筛除文章。
++
++在再次备份 SQLite 并完成 integrity_check 后部署，备份目录：
++`/home/dev/workspace/mediacrawler-scout/data/scout/backups/20260926T122321Z-list-body-reuse`。
++重启瞬间无运行中采集任务；历史任务、请求 UUID、已提交分页游标均保留。
++新的生产 HTTP 任务实际一次返回 5/20 个经确认的 body，完整性来源为
++`question_answers_api.v4.answers:target_entity.content`；顺序、排名、身份、证据哈希和 UUID 幂等均通过。
++
++- `full-body-probe-results.json`：5 篇独立正文比对和字段证据。
++- `page20-probe-results.json`：一次 20 条与原 4 页顺序比对。
++- `production-body-results.json`：部署后的真实 HTTP、单页覆盖、body 状态及正文哈希。
++
++## 尚未覆盖
++
++尚未实测生产服务中运行中的旧搜索/详情任务跨重启恢复、种子在前 20 个之外、真实上游页面重复
++回答、排名变化、真实登录失效或扩展失败。未通过页面 UI 逐项交叉核对默认列表。
++Scout 的跨话题去重、时间和偏好筛除后不补位、反馈训练以及真实飞书群交付属于集成验收，
++这里的采集器结果不代表这些场景已完成。
+--- /dev/null
++++ b/deploy/production-http-results.json
+@@ -0,0 +1,192 @@
++{
++  "health": {
++    "protocol_version": "1.0",
++    "upstream_version": "380b426000aac3d612837ed72c99808347dc94c9",
++    "status": "running",
++    "headless": true,
++    "cdp": false,
++    "capabilities": [
++      "search",
++      "detail",
++      "question_answers"
++    ],
++    "pending_runs": 0
++  },
++  "runs": [
++    {
++      "run_id": "a89ec91c-0187-4cfc-b185-065896eb7f8d",
++      "request_uuid": "2d05ec2a-e519-5a37-bdc4-3375a2bca0f8",
++      "question_id": "2085925368972698066",
++      "status": "completed",
++      "error": null,
++      "idempotent_same_id": true,
++      "uuid_payload_conflict_status": 409,
++      "count": 5,
++      "coverage": [
++        {
++          "question_id": "2085925368972698066",
++          "sort": "default",
++          "limit": 20,
++          "complete": true,
++          "stop_reason": "end_of_list",
++          "failure": null,
++          "pages": 1,
++          "raw_count": 5,
++          "evidence": [
++            {
++              "path": "/v1/evidence/c7d0f46bc0324aadab2d31f8d30b389a",
++              "sha256": "0290054a854c64e343378817a52ec8865be6a78e12ce6cfde318ead5d082915f"
++            }
++          ],
++          "candidates": 5,
++          "actual_count": 5,
++          "fetched_at": "2026-09-26T12:16:15.527508+00:00",
++          "next_uri": null,
++          "next_offset": null
++        }
++      ],
++      "ordered_ids_match": true,
++      "rank_contiguous": true,
++      "question_ids_match": true,
++      "evidence_sha256_valid": true,
++      "pages": [
++        {
++          "ids": [
++            "2086049693201704610",
++            "2086509931201557499",
++            "2086360090693603505",
++            "2086054014299398962",
++            "2085977074137837942"
++          ],
++          "paging": {
++            "is_end": true,
++            "is_start": true,
++            "next": "https://www.zhihu.com/api/v4/questions/2085925368972698066/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=5&platform=desktop&sort_by=default",
++            "previous": "https://www.zhihu.com/api/v4/questions/2085925368972698066/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=0&platform=desktop&sort_by=default",
++            "totals": 5
++          },
++          "sha256": "0290054a854c64e343378817a52ec8865be6a78e12ce6cfde318ead5d082915f"
++        }
++      ]
++    },
++    {
++      "run_id": "b198a20a-90e4-44fc-93a0-74bedb31f881",
++      "request_uuid": "407feadd-2fae-59f4-ad7d-11963fec0893",
++      "question_id": "2079174485035282663",
++      "status": "completed",
++      "error": null,
++      "idempotent_same_id": true,
++      "uuid_payload_conflict_status": 409,
++      "count": 20,
++      "coverage": [
++        {
++          "question_id": "2079174485035282663",
++          "sort": "default",
++          "limit": 20,
++          "complete": true,
++          "stop_reason": "limit_reached",
++          "failure": null,
++          "pages": 4,
++          "raw_count": 20,
++          "evidence": [
++            {
++              "path": "/v1/evidence/2b4cba55b2534ac6816d4ed6cdb7c8d1",
++              "sha256": "5ab91d7268d6f28cecf124187442eea4e2d834ee96f741c0c6ae1911007f8277"
++            },
++            {
++              "path": "/v1/evidence/973b3ec31e6c42638f166d24b9248ad6",
++              "sha256": "7ce66d9c767a94d67348af1be7fc589fca2bb0f3aff7a878c5420c9f531fa5d3"
++            },
++            {
++              "path": "/v1/evidence/b59a890745804b6e9b47e3bf47ae03cd",
++              "sha256": "52c5c91bd382a9b8b8e61a2f8278b1336327f921782f738cd409e4356ef0dd66"
++            },
++            {
++              "path": "/v1/evidence/8bece89060b142ffa19a733937f47718",
++              "sha256": "a470fa8122995ecb9b0e978ba12ec184c0e16aaf08c11f6afd6ae5faa5d25838"
++            }
++          ],
++          "candidates": 20,
++          "actual_count": 20,
++          "fetched_at": "2026-09-26T12:16:30.486405+00:00",
++          "next_uri": null,
++          "next_offset": null
++        }
++      ],
++      "ordered_ids_match": true,
++      "rank_contiguous": true,
++      "question_ids_match": true,
++      "evidence_sha256_valid": true,
++      "pages": [
++        {
++          "ids": [
++            "2079952871974507828",
++            "2079731555904374636",
++            "2079343065207157220",
++            "2079270899648354050",
++            "2079214302687503102"
++          ],
++          "paging": {
++            "is_end": false,
++            "is_start": true,
++            "next": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=5&platform=desktop&sort_by=default",
++            "previous": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=0&platform=desktop&sort_by=default",
++            "totals": 53
++          },
++          "sha256": "5ab91d7268d6f28cecf124187442eea4e2d834ee96f741c0c6ae1911007f8277"
++        },
++        {
++          "ids": [
++            "2080054751614464664",
++            "2079713699963715729",
++            "2079642490278355748",
++            "2079217782982558365",
++            "2079541679607002474"
++          ],
++          "paging": {
++            "is_end": false,
++            "is_start": false,
++            "next": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=10&platform=desktop&sort_by=default",
++            "previous": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=0&platform=desktop&sort_by=default",
++            "totals": 53
++          },
++          "sha256": "7ce66d9c767a94d67348af1be7fc589fca2bb0f3aff7a878c5420c9f531fa5d3"
++        },
++        {
++          "ids": [
++            "2079665546237305569",
++            "2082223566527934915",
++            "2079972259414929678",
++            "2079206232297042233",
++            "2079231305540166732"
++          ],
++          "paging": {
++            "is_end": false,
++            "is_start": false,
++            "next": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=16&platform=desktop&sort_by=default",
++            "previous": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=6&platform=desktop&sort_by=default",
++            "totals": 53
++          },
++          "sha256": "52c5c91bd382a9b8b8e61a2f8278b1336327f921782f738cd409e4356ef0dd66"
++        },
++        {
++          "ids": [
++            "2079988832934572393",
++            "2079552533077431802",
++            "2079682839805686540",
++            "2079915719379136594",
++            "2080241754410952511"
++          ],
++          "paging": {
++            "is_end": false,
++            "is_start": false,
++            "next": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=21&platform=desktop&sort_by=default",
++            "previous": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.excerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal&limit=5&offset=11&platform=desktop&sort_by=default",
++            "totals": 53
++          },
++          "sha256": "a470fa8122995ecb9b0e978ba12ec184c0e16aaf08c11f6afd6ae5faa5d25838"
++        }
++      ]
++    }
++  ]
++}
+--- /dev/null
++++ b/deploy/production-body-results.json
+@@ -0,0 +1,181 @@
++{
++  "health": {
++    "protocol_version": "1.0",
++    "upstream_version": "380b426000aac3d612837ed72c99808347dc94c9",
++    "status": "running",
++    "headless": true,
++    "cdp": false,
++    "capabilities": [
++      "search",
++      "detail",
++      "question_answers"
++    ],
++    "pending_runs": 0
++  },
++  "runs": [
++    {
++      "run_id": "88efb6f4-a84c-4fb2-ae79-668493b80df4",
++      "request_uuid": "4f77346b-0b2c-50c3-bc23-1e5349136d7c",
++      "question_id": "2085925368972698066",
++      "status": "completed",
++      "error": null,
++      "idempotent_same_id": true,
++      "uuid_payload_conflict_status": 409,
++      "count": 5,
++      "coverage": [
++        {
++          "question_id": "2085925368972698066",
++          "sort": "default",
++          "limit": 20,
++          "complete": true,
++          "stop_reason": "end_of_list",
++          "failure": null,
++          "pages": 1,
++          "raw_count": 5,
++          "evidence": [
++            {
++              "path": "/v1/evidence/6f98fe45c20e4b0bb618f1c61c943a96",
++              "sha256": "1fa35a8918cf8c0bc8b20046c03d37990aa6f96d9c584882524e1e373c11e83e"
++            }
++          ],
++          "candidates": 5,
++          "actual_count": 5,
++          "fetched_at": "2026-09-26T12:23:51.495688+00:00",
++          "next_uri": null,
++          "next_offset": null
++        }
++      ],
++      "ordered_ids_match": true,
++      "rank_contiguous": true,
++      "question_ids_match": true,
++      "evidence_sha256_valid": true,
++      "pages": [
++        {
++          "ids": [
++            "2086049693201704610",
++            "2086509931201557499",
++            "2086360090693603505",
++            "2086054014299398962",
++            "2085977074137837942"
++          ],
++          "paging": {
++            "is_end": true,
++            "is_start": false,
++            "next": "https://www.zhihu.com/api/v4/questions/2085925368972698066/answers?include=data%5B%2A%5D.content%2Cexcerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal%2Cpaid_info%2Cis_paid%2Cis_truncated%2Cis_limited%2Ccontent_need_truncated%2Canswer_type&limit=20&offset=40&platform=desktop&sort_by=default",
++            "previous": "https://www.zhihu.com/api/v4/questions/2085925368972698066/answers?include=data%5B%2A%5D.content%2Cexcerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal%2Cpaid_info%2Cis_paid%2Cis_truncated%2Cis_limited%2Ccontent_need_truncated%2Canswer_type&limit=20&offset=0&platform=desktop&sort_by=default",
++            "totals": 5
++          },
++          "sha256": "1fa35a8918cf8c0bc8b20046c03d37990aa6f96d9c584882524e1e373c11e83e"
++        }
++      ],
++      "body_success": 5,
++      "body_sha256": {
++        "2086049693201704610": "98bed1e8bac78c5005569deb9931eb026335ed5672156e67c0ff0b7c5f508760",
++        "2086509931201557499": "96178db00914490d679a47433fe47243a5130fd980ffad434f53e1386b782e63",
++        "2086360090693603505": "cd427aaf08b6dec45907bd990cb29dbfbf374f2e1d24b70a133ee7de2af788d9",
++        "2086054014299398962": "b46e884f85e23ecb2881f93114261e3075c6564c6b2697139b352884eb519dd0",
++        "2085977074137837942": "9ed522e7301d88fff77f73e72b4896bdf51d8c4b22cd51bad1983ce7ba34b23c"
++      },
++      "completeness_basis": [
++        "question_answers_api.v4.answers:target_entity.content"
++      ]
++    },
++    {
++      "run_id": "4bc02f63-1fd8-4b99-9d8a-8d3eccad1c61",
++      "request_uuid": "e88133aa-53b4-5f94-9ecc-af160a302406",
++      "question_id": "2079174485035282663",
++      "status": "completed",
++      "error": null,
++      "idempotent_same_id": true,
++      "uuid_payload_conflict_status": 409,
++      "count": 20,
++      "coverage": [
++        {
++          "question_id": "2079174485035282663",
++          "sort": "default",
++          "limit": 20,
++          "complete": true,
++          "stop_reason": "limit_reached",
++          "failure": null,
++          "pages": 1,
++          "raw_count": 20,
++          "evidence": [
++            {
++              "path": "/v1/evidence/5f9c7e4c85bc4ed8989d1f1d0766b1d8",
++              "sha256": "f3bce0cf3e37a77ba852f7eee945c55bb9eb4275f2c54f6038e819c5507f86f5"
++            }
++          ],
++          "candidates": 20,
++          "actual_count": 20,
++          "fetched_at": "2026-09-26T12:24:03.656558+00:00",
++          "next_uri": null,
++          "next_offset": null
++        }
++      ],
++      "ordered_ids_match": true,
++      "rank_contiguous": true,
++      "question_ids_match": true,
++      "evidence_sha256_valid": true,
++      "pages": [
++        {
++          "ids": [
++            "2079952871974507828",
++            "2079731555904374636",
++            "2079343065207157220",
++            "2079270899648354050",
++            "2079214302687503102",
++            "2080054751614464664",
++            "2079713699963715729",
++            "2079642490278355748",
++            "2079217782982558365",
++            "2079541679607002474",
++            "2079665546237305569",
++            "2082223566527934915",
++            "2079972259414929678",
++            "2079206232297042233",
++            "2079231305540166732",
++            "2079988832934572393",
++            "2079552533077431802",
++            "2079682839805686540",
++            "2079915719379136594",
++            "2080241754410952511"
++          ],
++          "paging": {
++            "is_end": false,
++            "is_start": false,
++            "next": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.content%2Cexcerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal%2Cpaid_info%2Cis_paid%2Cis_truncated%2Cis_limited%2Ccontent_need_truncated%2Canswer_type&limit=20&offset=21&platform=desktop&sort_by=default",
++            "previous": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.content%2Cexcerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal%2Cpaid_info%2Cis_paid%2Cis_truncated%2Cis_limited%2Ccontent_need_truncated%2Canswer_type&limit=20&offset=0&platform=desktop&sort_by=default",
++            "totals": 53
++          },
++          "sha256": "f3bce0cf3e37a77ba852f7eee945c55bb9eb4275f2c54f6038e819c5507f86f5"
++        }
++      ],
++      "body_success": 20,
++      "body_sha256": {
++        "2079952871974507828": "473216606e5e717428a9a3fecaac8034e4c5cd22b0bc887101a0363f40be819d",
++        "2079731555904374636": "7b3628eb48ac03d2eea34fea1c2b756c38fffddf64a572fa79e011216dff3d9d",
++        "2079343065207157220": "02c214a7cbc0dd7209e6670f6137ffd896db06794e6a10f8e82355dbc6c710ae",
++        "2079270899648354050": "668654390e588094ff9bbc51063337c3799851f1d0f3ad9086b220ac3028825a",
++        "2079214302687503102": "6331e9514492ffd34ffcb13ff6e8cb694a38f281027d513fbd3ebff885c65176",
++        "2080054751614464664": "be2647ebfdca46fe285ca65f41e8b5465ec6d012c12e5433ac753a38f63e6020",
++        "2079713699963715729": "023f7648f120789ba0bdc27e1f59e1ab7d7b94942b255efb1feca72a32108612",
++        "2079642490278355748": "42089bfe1f37fc790c98648af25987d21bd2b42f059571e3834111ffb9ca50e4",
++        "2079217782982558365": "467d88ae92bdae2bc93e767644c1ae0c0faad0b04fbad2c889eee151da639113",
++        "2079541679607002474": "201f84b276de4a6cd6a00968a76973d848a45b372746443a6461786669945b2c",
++        "2079665546237305569": "1d3954a86b41d42b022d613800d4928b5e8061c4037efbd8219e01a6f8e3063d",
++        "2082223566527934915": "ebab7e9aa170ce461d61fd7b05ab893a8e3bf4ae21f3387581002547b3d72316",
++        "2079972259414929678": "02693949560816669f37d4f46d801fe72376149c9b3440ebcfa1b92b488e2c76",
++        "2079206232297042233": "566ee4bcfbaf18ab8e11d9c3d63d47ae7a1d9c5d7d984fe08bf49420af843d5a",
++        "2079231305540166732": "ec506cc615b48b5e7b9df5a788f2951e22de7a8ba9ad9b2be8fa16399a69815d",
++        "2079988832934572393": "5c2581d2d50d9ec899fb07290facd4b6ef97cc5bb6d085173be5fcfce6bd3dc4",
++        "2079552533077431802": "d3133b932c2384b6d6152b1b4cc28b4a0d982451c856823acdf8a57262ceae4f",
++        "2079682839805686540": "b54bcb0fdb524cd49426ec02b8c30e33608a9e5517c5e6e8fc3ca363e6ca2bc6",
++        "2079915719379136594": "ab5ca6dc719381131bc6b85f8d85d1faed6ff06ef5a0bcaea36d55534a41a9a2",
++        "2080241754410952511": "bc988f6da7e95cc3a519181cbc6a20e94ae5e542220376746ed0d30f81a8ba3a"
++      },
++      "completeness_basis": [
++        "question_answers_api.v4.answers:target_entity.content"
++      ]
++    }
++  ]
++}
+--- /dev/null
++++ b/deploy/full-body-probe-results.json
+@@ -0,0 +1,388 @@
++{
++  "question_id": "2085925368972698066",
++  "probe_id": "b63edc19-eee0-4990-8814-80f5e5adf3ca",
++  "request_uri": "/api/v4/questions/2085925368972698066/answers?include=data%5B%2A%5D.content%2Cexcerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal%2Cpaid_info%2Cis_paid%2Cis_truncated%2Cis_limited%2Ccontent_need_truncated%2Canswer_type&limit=5&offset=0&platform=desktop&sort_by=default",
++  "list_evidence": {
++    "path": "/v1/evidence/ec4500fc6f8d401782a2878fc476c45e",
++    "sha256": "325553ede7945c1a4d3d27498d2f2f2a01208a3adba9bda6d5de4d3356fe9cc1"
++  },
++  "paging": {
++    "is_end": true,
++    "is_start": true,
++    "next": "https://www.zhihu.com/api/v4/questions/2085925368972698066/answers?include=data%5B%2A%5D.content%2Cexcerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal%2Cpaid_info%2Cis_paid%2Cis_truncated%2Cis_limited%2Ccontent_need_truncated%2Canswer_type&limit=5&offset=5&platform=desktop&sort_by=default",
++    "previous": "https://www.zhihu.com/api/v4/questions/2085925368972698066/answers?include=data%5B%2A%5D.content%2Cexcerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal%2Cpaid_info%2Cis_paid%2Cis_truncated%2Cis_limited%2Ccontent_need_truncated%2Canswer_type&limit=5&offset=0&platform=desktop&sort_by=default",
++    "totals": 5
++  },
++  "ids": [
++    "2086049693201704610",
++    "2086509931201557499",
++    "2086360090693603505",
++    "2086054014299398962",
++    "2085977074137837942"
++  ],
++  "same_order_as_prior_default_list": true,
++  "detail_run_id": "96491f16-7a77-4358-a0a7-bf13c12ca644",
++  "detail_status": "completed",
++  "comparisons": [
++    {
++      "id": "2086049693201704610",
++      "list_status": "body",
++      "detail_status": "body",
++      "body_equal": true,
++      "list_body_chars": 1193,
++      "detail_body_chars": 1193,
++      "list_body_sha256": "98bed1e8bac78c5005569deb9931eb026335ed5672156e67c0ff0b7c5f508760",
++      "detail_body_sha256": "98bed1e8bac78c5005569deb9931eb026335ed5672156e67c0ff0b7c5f508760",
++      "list_entity_keys": [
++        "allow_segment_interaction",
++        "answer_type",
++        "author",
++        "content",
++        "content_need_truncated",
++        "created_time",
++        "excerpt",
++        "extras",
++        "force_login_when_click_read_more",
++        "id",
++        "is_collapsed",
++        "is_copyable",
++        "is_jump_native",
++        "is_normal",
++        "question",
++        "relationship",
++        "type",
++        "updated_time",
++        "url"
++      ],
++      "flags": {
++        "is_normal": true,
++        "content_need_truncated": false,
++        "answer_type": "normal"
++      },
++      "list_completeness": {
++        "basis": "question_answers_api.v4:target_entity.content",
++        "verified": true,
++        "target_id": "2086049693201704610",
++        "target_type": "answer",
++        "target_id_verified": true,
++        "content_field_present": true,
++        "excluded": [
++          "navigation",
++          "comments",
++          "recommendations",
++          "other_answers"
++        ],
++        "limitations": []
++      },
++      "detail_completeness": {
++        "basis": "detail_html.initialState.entities:target_entity.content",
++        "verified": true,
++        "target_id": "2086049693201704610",
++        "target_type": "answer",
++        "target_id_verified": true,
++        "content_field_present": true,
++        "excluded": [
++          "navigation",
++          "comments",
++          "recommendations",
++          "other_answers"
++        ],
++        "limitations": []
++      },
++      "detail_evidence": [
++        {
++          "path": "/v1/evidence/bea05518dcae467c8f6deb9d58aa0cfb",
++          "sha256": "2b5e3759c89548898791c70a4d6207af9a7b5f67b42bd90a2d6d1e44b545086f"
++        }
++      ]
++    },
++    {
++      "id": "2086509931201557499",
++      "list_status": "body",
++      "detail_status": "body",
++      "body_equal": true,
++      "list_body_chars": 58,
++      "detail_body_chars": 58,
++      "list_body_sha256": "96178db00914490d679a47433fe47243a5130fd980ffad434f53e1386b782e63",
++      "detail_body_sha256": "96178db00914490d679a47433fe47243a5130fd980ffad434f53e1386b782e63",
++      "list_entity_keys": [
++        "allow_segment_interaction",
++        "answer_type",
++        "author",
++        "content",
++        "content_need_truncated",
++        "created_time",
++        "excerpt",
++        "extras",
++        "force_login_when_click_read_more",
++        "id",
++        "is_collapsed",
++        "is_copyable",
++        "is_jump_native",
++        "is_normal",
++        "question",
++        "relationship",
++        "type",
++        "updated_time",
++        "url"
++      ],
++      "flags": {
++        "is_normal": true,
++        "content_need_truncated": false,
++        "answer_type": "normal"
++      },
++      "list_completeness": {
++        "basis": "question_answers_api.v4:target_entity.content",
++        "verified": true,
++        "target_id": "2086509931201557499",
++        "target_type": "answer",
++        "target_id_verified": true,
++        "content_field_present": true,
++        "excluded": [
++          "navigation",
++          "comments",
++          "recommendations",
++          "other_answers"
++        ],
++        "limitations": []
++      },
++      "detail_completeness": {
++        "basis": "detail_html.initialState.entities:target_entity.content",
++        "verified": true,
++        "target_id": "2086509931201557499",
++        "target_type": "answer",
++        "target_id_verified": true,
++        "content_field_present": true,
++        "excluded": [
++          "navigation",
++          "comments",
++          "recommendations",
++          "other_answers"
++        ],
++        "limitations": []
++      },
++      "detail_evidence": [
++        {
++          "path": "/v1/evidence/88288d8718f34006bf47ceb8cbdaf5bc",
++          "sha256": "0062fa8fbcae93cc1fd180b1e7efb2cd0f12837ca201ed3b496f776bc648a9ec"
++        }
++      ]
++    },
++    {
++      "id": "2086360090693603505",
++      "list_status": "body",
++      "detail_status": "body",
++      "body_equal": true,
++      "list_body_chars": 209,
++      "detail_body_chars": 209,
++      "list_body_sha256": "cd427aaf08b6dec45907bd990cb29dbfbf374f2e1d24b70a133ee7de2af788d9",
++      "detail_body_sha256": "cd427aaf08b6dec45907bd990cb29dbfbf374f2e1d24b70a133ee7de2af788d9",
++      "list_entity_keys": [
++        "allow_segment_interaction",
++        "answer_type",
++        "author",
++        "content",
++        "content_need_truncated",
++        "created_time",
++        "excerpt",
++        "extras",
++        "force_login_when_click_read_more",
++        "id",
++        "is_collapsed",
++        "is_copyable",
++        "is_jump_native",
++        "is_normal",
++        "question",
++        "relationship",
++        "type",
++        "updated_time",
++        "url"
++      ],
++      "flags": {
++        "is_normal": true,
++        "content_need_truncated": false,
++        "answer_type": "normal"
++      },
++      "list_completeness": {
++        "basis": "question_answers_api.v4:target_entity.content",
++        "verified": true,
++        "target_id": "2086360090693603505",
++        "target_type": "answer",
++        "target_id_verified": true,
++        "content_field_present": true,
++        "excluded": [
++          "navigation",
++          "comments",
++          "recommendations",
++          "other_answers"
++        ],
++        "limitations": []
++      },
++      "detail_completeness": {
++        "basis": "detail_html.initialState.entities:target_entity.content",
++        "verified": true,
++        "target_id": "2086360090693603505",
++        "target_type": "answer",
++        "target_id_verified": true,
++        "content_field_present": true,
++        "excluded": [
++          "navigation",
++          "comments",
++          "recommendations",
++          "other_answers"
++        ],
++        "limitations": []
++      },
++      "detail_evidence": [
++        {
++          "path": "/v1/evidence/92ec655968c9413ebf4188dcfa7f15e0",
++          "sha256": "0b7bfc4c10a72e5bd3de241450338f4f5924d5e11ebda6fa4688b51cf14d9d8e"
++        }
++      ]
++    },
++    {
++      "id": "2086054014299398962",
++      "list_status": "body",
++      "detail_status": "body",
++      "body_equal": true,
++      "list_body_chars": 1293,
++      "detail_body_chars": 1293,
++      "list_body_sha256": "b46e884f85e23ecb2881f93114261e3075c6564c6b2697139b352884eb519dd0",
++      "detail_body_sha256": "b46e884f85e23ecb2881f93114261e3075c6564c6b2697139b352884eb519dd0",
++      "list_entity_keys": [
++        "allow_segment_interaction",
++        "answer_type",
++        "author",
++        "content",
++        "content_need_truncated",
++        "created_time",
++        "excerpt",
++        "extras",
++        "force_login_when_click_read_more",
++        "id",
++        "is_collapsed",
++        "is_copyable",
++        "is_jump_native",
++        "is_normal",
++        "question",
++        "relationship",
++        "type",
++        "updated_time",
++        "url"
++      ],
++      "flags": {
++        "is_normal": true,
++        "content_need_truncated": false,
++        "answer_type": "normal"
++      },
++      "list_completeness": {
++        "basis": "question_answers_api.v4:target_entity.content",
++        "verified": true,
++        "target_id": "2086054014299398962",
++        "target_type": "answer",
++        "target_id_verified": true,
++        "content_field_present": true,
++        "excluded": [
++          "navigation",
++          "comments",
++          "recommendations",
++          "other_answers"
++        ],
++        "limitations": []
++      },
++      "detail_completeness": {
++        "basis": "detail_html.initialState.entities:target_entity.content",
++        "verified": true,
++        "target_id": "2086054014299398962",
++        "target_type": "answer",
++        "target_id_verified": true,
++        "content_field_present": true,
++        "excluded": [
++          "navigation",
++          "comments",
++          "recommendations",
++          "other_answers"
++        ],
++        "limitations": []
++      },
++      "detail_evidence": [
++        {
++          "path": "/v1/evidence/8fa97ac994d6404096a8f10072ad92c6",
++          "sha256": "8f00f36d03442f96f29de2b10b53689ae77bf7810f8aea1c988857a0ba2dd3c9"
++        }
++      ]
++    },
++    {
++      "id": "2085977074137837942",
++      "list_status": "body",
++      "detail_status": "body",
++      "body_equal": true,
++      "list_body_chars": 19,
++      "detail_body_chars": 19,
++      "list_body_sha256": "9ed522e7301d88fff77f73e72b4896bdf51d8c4b22cd51bad1983ce7ba34b23c",
++      "detail_body_sha256": "9ed522e7301d88fff77f73e72b4896bdf51d8c4b22cd51bad1983ce7ba34b23c",
++      "list_entity_keys": [
++        "allow_segment_interaction",
++        "answer_type",
++        "author",
++        "content",
++        "content_need_truncated",
++        "created_time",
++        "excerpt",
++        "extras",
++        "force_login_when_click_read_more",
++        "id",
++        "is_collapsed",
++        "is_copyable",
++        "is_jump_native",
++        "is_normal",
++        "question",
++        "relationship",
++        "type",
++        "updated_time",
++        "url"
++      ],
++      "flags": {
++        "is_normal": true,
++        "content_need_truncated": false,
++        "answer_type": "normal"
++      },
++      "list_completeness": {
++        "basis": "question_answers_api.v4:target_entity.content",
++        "verified": true,
++        "target_id": "2085977074137837942",
++        "target_type": "answer",
++        "target_id_verified": true,
++        "content_field_present": true,
++        "excluded": [
++          "navigation",
++          "comments",
++          "recommendations",
++          "other_answers"
++        ],
++        "limitations": []
++      },
++      "detail_completeness": {
++        "basis": "detail_html.initialState.entities:target_entity.content",
++        "verified": true,
++        "target_id": "2085977074137837942",
++        "target_type": "answer",
++        "target_id_verified": true,
++        "content_field_present": true,
++        "excluded": [
++          "navigation",
++          "comments",
++          "recommendations",
++          "other_answers"
++        ],
++        "limitations": []
++      },
++      "detail_evidence": [
++        {
++          "path": "/v1/evidence/a86443bdd5464ba9a186dbfc650db776",
++          "sha256": "083e52d1748ee12f84d8789cdcad953ae431b17cb48037dfc373ad43437d398e"
++        }
++      ]
++    }
++  ]
++}
+--- /dev/null
++++ b/deploy/page20-probe-results.json
+@@ -0,0 +1,221 @@
++{
++  "question_id": "2079174485035282663",
++  "request_uri": "/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.content%2Cexcerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal%2Cpaid_info%2Cis_paid%2Cis_truncated%2Cis_limited%2Ccontent_need_truncated%2Canswer_type&limit=20&offset=0&platform=desktop&sort_by=default",
++  "evidence": {
++    "path": "/v1/evidence/276abdd416d3493abafc4f95409293fa",
++    "sha256": "6ada6562650ac7aab1370d5b1f699b3a0018942cc3eee22da09bc9e1eedf61e5"
++  },
++  "count": 20,
++  "ordered_ids": [
++    "2079952871974507828",
++    "2079731555904374636",
++    "2079343065207157220",
++    "2079270899648354050",
++    "2079214302687503102",
++    "2080054751614464664",
++    "2079713699963715729",
++    "2079642490278355748",
++    "2079217782982558365",
++    "2079541679607002474",
++    "2079665546237305569",
++    "2082223566527934915",
++    "2079972259414929678",
++    "2079206232297042233",
++    "2079231305540166732",
++    "2079988832934572393",
++    "2079552533077431802",
++    "2079682839805686540",
++    "2079915719379136594",
++    "2080241754410952511"
++  ],
++  "paging": {
++    "is_end": false,
++    "is_start": false,
++    "next": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.content%2Cexcerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal%2Cpaid_info%2Cis_paid%2Cis_truncated%2Cis_limited%2Ccontent_need_truncated%2Canswer_type&limit=20&offset=21&platform=desktop&sort_by=default",
++    "previous": "https://www.zhihu.com/api/v4/questions/2079174485035282663/answers?include=data%5B%2A%5D.content%2Cexcerpt%2Cauthor%2Cquestion%2Ccreated_time%2Cupdated_time%2Cis_normal%2Cpaid_info%2Cis_paid%2Cis_truncated%2Cis_limited%2Ccontent_need_truncated%2Canswer_type&limit=20&offset=0&platform=desktop&sort_by=default",
++    "totals": 53
++  },
++  "same_order_as_four_page_capture": true,
++  "items": [
++    {
++      "id": "2079952871974507828",
++      "content_chars": 113,
++      "flags": {
++        "answer_type": "normal",
++        "is_normal": true,
++        "content_need_truncated": false
++      }
++    },
++    {
++      "id": "2079731555904374636",
++      "content_chars": 157,
++      "flags": {
++        "answer_type": "normal",
++        "is_normal": true,
++        "content_need_truncated": false
++      }
++    },
++    {
++      "id": "2079343065207157220",
++      "content_chars": 10239,
++      "flags": {
++        "answer_type": "normal",
++        "is_normal": true,
++        "content_need_truncated": false
++      }
++    },
++    {
++      "id": "2079270899648354050",
++      "content_chars": 493,
++      "flags": {
++        "answer_type": "normal",
++        "is_normal": true,
++        "content_need_truncated": false
++      }
++    },
++    {
++      "id": "2079214302687503102",
++      "content_chars": 8520,
++      "flags": {
++        "answer_type": "normal",
++        "is_normal": true,
++        "content_need_truncated": false
++      }
++    },
++    {
++      "id": "2080054751614464664",
++      "content_chars": 1070,
++      "flags": {
++        "answer_type": "normal",
++        "is_normal": true,
++        "content_need_truncated": false
++      }
++    },
++    {
++      "id": "2079713699963715729",
++      "content_chars": 124,
++      "flags": {
++        "answer_type": "normal",
++        "is_normal": true,
++        "content_need_truncated": false
++      }
++    },
++    {
++      "id": "2079642490278355748",
++      "content_chars": 3762,
++      "flags": {
++        "answer_type": "normal",
++        "is_normal": true,
++        "content_need_truncated": false
++      }
++    },
++    {
++      "id": "2079217782982558365",
++      "content_chars": 2480,
++      "flags": {
++        "answer_type": "normal",
++        "is_normal": true,
++        "content_need_truncated": false
++      }
++    },
++    {
++      "id": "2079541679607002474",
++      "content_chars": 34268,
++      "flags": {
++        "answer_type": "normal",
++        "is_normal": true,
++        "content_need_truncated": false
++      }
++    },
++    {
++      "id": "2079665546237305569",
++      "content_chars": 280,
++      "flags": {
++        "answer_type": "normal",
++        "is_normal": true,
++        "content_need_truncated": false
++      }
++    },
++    {
++      "id": "2082223566527934915",
++      "content_chars": 124,
++      "flags": {
++        "answer_type": "normal",
++        "is_normal": true,
++        "content_need_truncated": false
++      }
++    },
++    {
++      "id": "2079972259414929678",
++      "content_chars": 268,
++      "flags": {
++        "answer_type": "normal",
++        "is_normal": true,
++        "content_need_truncated": false
++      }
++    },
++    {
++      "id": "2079206232297042233",
++      "content_chars": 6586,
++      "flags": {
++        "answer_type": "normal",
++        "is_normal": true,
++        "content_need_truncated": false
++      }
++    },
++    {
++      "id": "2079231305540166732",
++      "content_chars": 1257,
++      "flags": {
++        "answer_type": "normal",
++        "is_normal": true,
++        "content_need_truncated": false
++      }
++    },
++    {
++      "id": "2079988832934572393",
++      "content_chars": 1036,
++      "flags": {
++        "answer_type": "normal",
++        "is_normal": true,
++        "content_need_truncated": false
++      }
++    },
++    {
++      "id": "2079552533077431802",
++      "content_chars": 5865,
++      "flags": {
++        "answer_type": "normal",
++        "is_normal": true,
++        "content_need_truncated": false
++      }
++    },
++    {
++      "id": "2079682839805686540",
++      "content_chars": 45,
++      "flags": {
++        "answer_type": "normal",
++        "is_normal": true,
++        "content_need_truncated": false
++      }
++    },
++    {
++      "id": "2079915719379136594",
++      "content_chars": 250,
++      "flags": {
++        "answer_type": "normal",
++        "is_normal": true,
++        "content_need_truncated": false
++      }
++    },
++    {
++      "id": "2080241754410952511",
++      "content_chars": 315,
++      "flags": {
++        "answer_type": "normal",
++        "is_normal": true,
++        "content_need_truncated": false
++      }
++    }
++  ]
++}
