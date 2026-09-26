@@ -210,9 +210,7 @@ def build_recorded_card(
         [
             {"tag": "hr"},
             _markdown(
-                f"**已记录反馈**：{label}\n"
-                f"**原因**：{_md_escape(feedback.reason)}\n"
-                f"**反馈修订 ID**：{feedback.revision_id}"
+                f"**已记录反馈**：{label}\n**原因**：{_md_escape(feedback.reason)}"
             ),
             {
                 "tag": "action",

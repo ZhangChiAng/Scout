@@ -62,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument(
         "--profile-update",
         action="store_true",
-        help="apply feedback saved by 19:00 Beijing time and notify profile changes",
+        help="apply current feedback at task start and notify profile changes",
     )
     mode.add_argument(
         "--profile-rebuild",

@@ -149,7 +149,6 @@ async def _run(
                 notifier,
                 config,
                 mode=mode,
-                started_at=started_at,
                 output=output,
             )
             if profile is None:
@@ -298,10 +297,10 @@ async def _run_scheduled(
         _print_summary(stats, output)
         return 1
     feedback = storage.feedback_evidence(
-        read_only=True, cutoff=profile.last_feedback_revision_id
+        read_only=True, cutoff=profile.last_feedback_change_seq
     )
     print(
-        f"Using saved preference v{profile.version}; feedback_cutoff={profile.last_feedback_revision_id}; pending_dates={','.join(entry[0] for entry in pending)}",
+        f"Using saved preference v{profile.version}; feedback_cutoff={profile.last_feedback_change_seq}; pending_dates={','.join(entry[0] for entry in pending)}",
         file=output,
         flush=True,
     )

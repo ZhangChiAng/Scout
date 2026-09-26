@@ -125,6 +125,7 @@ class PreferenceEntry:
     category: str
     text: str
     evidence_ids: tuple[int, ...]
+    evidence_changes: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,9 +133,9 @@ class PreferenceUpdate:
     mode: str
     trigger: str
     feedback_count: int
-    revision_count: int
-    revisions_since_rebuild: int
-    last_full_feedback_revision_id: int
+    change_count: int
+    changes_since_rebuild: int
+    last_full_feedback_change_seq: int
     input_chars: int
 
 
@@ -149,11 +150,12 @@ class PreferenceProfile:
     uncertainties: tuple[str, ...] = ()
     evidence_ids: tuple[int, ...] = ()
     change_summary: str = ""
-    last_feedback_revision_id: int = 0
+    last_feedback_change_seq: int = 0
     notified: bool = False
     format_version: int = 1
     entries: tuple[PreferenceEntry, ...] = ()
     update: PreferenceUpdate | None = None
+    outdated_evidence_count: int = 0
 
     @classmethod
     def empty(cls) -> PreferenceProfile:
@@ -210,9 +212,10 @@ class PreferenceProfile:
         return {
             **self.as_entry_dict(),
             "change_summary": self.change_summary,
-            "last_feedback_revision_id": self.last_feedback_revision_id,
+            "last_feedback_change_seq": self.last_feedback_change_seq,
             "notified": self.notified,
             "evidence_count": len(self.evidence_ids),
+            "outdated_evidence_count": self.outdated_evidence_count,
             "rule_count": self.rule_count,
             "entry_count": sum(len(values) for _, values in self.readable_sections()),
             "readable_chars": len(
@@ -259,8 +262,9 @@ class CardDelivery:
 
 @dataclass(frozen=True, slots=True)
 class FeedbackEvidence:
-    revision_id: int
-    delivery_id: int
+    feedback_id: int
+    created_seq: int
+    change_seq: int
     article_key: str
     sentiment: str
     reason: str
@@ -268,13 +272,13 @@ class FeedbackEvidence:
     category: str
     summary: str
     detail: str
-    created_at: str
+    updated_at: str
 
 
 @dataclass(frozen=True, slots=True)
 class FeedbackWrite:
-    revision_id: int
-    created: bool
+    feedback_id: int
+    changed: bool
     sentiment: str
     reason: str
 
@@ -285,17 +289,17 @@ class ProfileSnapshot:
 
     active: PreferenceProfile | None = None
     feedback: tuple[FeedbackEvidence, ...] = ()
-    cutoff_revision_id: int = 0
+    cutoff_change_seq: int = 0
     next_version: int = 1
-    new_revision_count: int = 0
-    revisions_since_rebuild: int = 0
+    new_change_count: int = 0
+    changes_since_rebuild: int = 0
     edited_processed_feedback: bool = False
     rolled_back: bool = False
 
     @property
     def new_feedback(self) -> tuple[FeedbackEvidence, ...]:
-        processed = self.active.last_feedback_revision_id if self.active else 0
-        return tuple(f for f in self.feedback if f.revision_id > processed)
+        processed = self.active.last_feedback_change_seq if self.active else 0
+        return tuple(f for f in self.feedback if f.change_seq > processed)
 
 
 @dataclass(slots=True)

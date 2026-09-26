@@ -94,14 +94,22 @@ CREATE TABLE IF NOT EXISTS card_deliveries (
 )
 """
 
-FEEDBACK_REVISIONS_SCHEMA = """
-CREATE TABLE IF NOT EXISTS feedback_revisions (
-    revision_id INTEGER PRIMARY KEY,
-    delivery_id INTEGER NOT NULL REFERENCES card_deliveries(delivery_id),
+FEEDBACK_SCHEMA = """
+CREATE TABLE IF NOT EXISTS feedback (
+    delivery_id INTEGER PRIMARY KEY REFERENCES card_deliveries(delivery_id),
     owner_open_id TEXT NOT NULL,
     sentiment TEXT NOT NULL CHECK (sentiment IN ('like', 'dislike')),
     reason TEXT NOT NULL CHECK (length(reason) BETWEEN 1 AND 500),
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    created_seq INTEGER NOT NULL CHECK (created_seq > 0),
+    change_seq INTEGER NOT NULL UNIQUE CHECK (change_seq >= created_seq),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+)
+"""
+
+FEEDBACK_STATE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS feedback_state (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    change_seq INTEGER NOT NULL CHECK (change_seq >= 0)
 )
 """
 
@@ -120,7 +128,7 @@ CREATE TABLE IF NOT EXISTS preference_profiles (
     profile_json TEXT NOT NULL,
     evidence_ids_json TEXT NOT NULL,
     change_summary TEXT NOT NULL,
-    last_feedback_revision_id INTEGER NOT NULL,
+    last_feedback_change_seq INTEGER NOT NULL,
     source TEXT NOT NULL CHECK (source IN ('llm', 'rollback')),
     rollback_from_version INTEGER,
     active INTEGER NOT NULL CHECK (active IN (0, 1)),
@@ -156,8 +164,9 @@ PREFERENCE_DETAIL_SCHEMAS = (
     """CREATE TABLE IF NOT EXISTS preference_entry_evidence (
         profile_version INTEGER NOT NULL,
         entry_id TEXT NOT NULL,
-        feedback_revision_id INTEGER NOT NULL REFERENCES feedback_revisions(revision_id),
-        PRIMARY KEY (profile_version, entry_id, feedback_revision_id),
+        feedback_id INTEGER NOT NULL REFERENCES feedback(delivery_id),
+        feedback_change_seq INTEGER NOT NULL CHECK (feedback_change_seq > 0),
+        PRIMARY KEY (profile_version, entry_id, feedback_id),
         FOREIGN KEY (profile_version, entry_id)
             REFERENCES preference_entries(profile_version, entry_id)
     )""",
@@ -166,9 +175,9 @@ PREFERENCE_DETAIL_SCHEMAS = (
         mode TEXT NOT NULL CHECK (mode IN ('incremental', 'rebuild', 'rollback')),
         trigger TEXT NOT NULL,
         feedback_count INTEGER NOT NULL,
-        revision_count INTEGER NOT NULL,
-        revisions_since_rebuild INTEGER NOT NULL,
-        last_full_feedback_revision_id INTEGER NOT NULL,
+        change_count INTEGER NOT NULL,
+        changes_since_rebuild INTEGER NOT NULL,
+        last_full_feedback_change_seq INTEGER NOT NULL,
         input_chars INTEGER NOT NULL
     )""",
 )
@@ -189,12 +198,16 @@ class SQLiteStorage:
         with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
+                if _table_exists(connection, "feedback_revisions"):
+                    raise StorageError("feedback baseline migration is required")
                 self._initialize_delivered(connection)
                 connection.execute(SOURCE_STATE_SCHEMA)
                 connection.execute(BASELINE_SCHEMA)
                 connection.execute(ARTICLE_SNAPSHOTS_SCHEMA)
                 connection.execute(CARD_DELIVERIES_SCHEMA)
-                connection.execute(FEEDBACK_REVISIONS_SCHEMA)
+                connection.execute(FEEDBACK_SCHEMA)
+                connection.execute(FEEDBACK_STATE_SCHEMA)
+                connection.execute("INSERT OR IGNORE INTO feedback_state VALUES (1, 0)")
                 connection.execute(OWNER_SCHEMA)
                 connection.execute(PREFERENCE_PROFILES_SCHEMA)
                 for schema in PREFERENCE_DETAIL_SCHEMAS:
@@ -218,12 +231,6 @@ class SQLiteStorage:
                     """
                     CREATE INDEX IF NOT EXISTS card_deliveries_article_key_idx
                     ON card_deliveries (article_key)
-                    """
-                )
-                connection.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS feedback_revisions_delivery_idx
-                    ON feedback_revisions (delivery_id, revision_id DESC)
                     """
                 )
                 connection.execute(
@@ -542,7 +549,7 @@ class SQLiteStorage:
         finally:
             connection.close()
 
-    # -- Feedback revisions and sole owner -------------------------------
+    # -- Current feedback and sole owner ---------------------------------
 
     def record_feedback(
         self,
@@ -584,9 +591,8 @@ class SQLiteStorage:
                     raise FeedbackError("该 Scout 已绑定其他 owner")
                 latest = connection.execute(
                     """
-                    SELECT revision_id, sentiment, reason
-                    FROM feedback_revisions
-                    WHERE delivery_id = ? ORDER BY revision_id DESC LIMIT 1
+                    SELECT delivery_id, sentiment, reason
+                    FROM feedback WHERE delivery_id = ?
                     """,
                     (delivery_id,),
                 ).fetchone()
@@ -597,20 +603,29 @@ class SQLiteStorage:
                 ):
                     connection.commit()
                     return FeedbackWrite(int(latest[0]), False, sentiment, reason)
-                cursor = connection.execute(
+                change_seq = connection.execute(
+                    "UPDATE feedback_state SET change_seq = change_seq + 1 "
+                    "WHERE singleton = 1 RETURNING change_seq"
+                ).fetchone()[0]
+                connection.execute(
                     """
-                    INSERT INTO feedback_revisions (
-                        delivery_id, owner_open_id, sentiment, reason
-                    ) VALUES (?, ?, ?, ?)
+                    INSERT INTO feedback (
+                        delivery_id, owner_open_id, sentiment, reason,
+                        created_seq, change_seq
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(delivery_id) DO UPDATE SET
+                        sentiment = excluded.sentiment, reason = excluded.reason,
+                        change_seq = excluded.change_seq,
+                        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                     """,
-                    (delivery_id, open_id, sentiment, reason),
+                    (delivery_id, open_id, sentiment, reason, change_seq, change_seq),
                 )
             except BaseException:
                 connection.rollback()
                 raise
             else:
                 connection.commit()
-                return FeedbackWrite(int(cursor.lastrowid), True, sentiment, reason)
+                return FeedbackWrite(delivery_id, True, sentiment, reason)
 
     def latest_feedback_for_delivery(
         self, delivery_id: int, *, read_only: bool = False
@@ -619,16 +634,16 @@ class SQLiteStorage:
         if connection is None:
             return None
         try:
-            if not _table_exists(connection, "feedback_revisions"):
+            if not _table_exists(connection, "feedback"):
                 return None
             row = connection.execute(
-                """SELECT f.revision_id, f.delivery_id, s.article_key, f.sentiment,
-                          f.reason, s.title, s.category, s.summary, s.detail, f.created_at
-                   FROM feedback_revisions f
+                """SELECT f.delivery_id, f.created_seq, f.change_seq,
+                          s.article_key, f.sentiment, f.reason, s.title,
+                          s.category, s.summary, s.detail, f.updated_at
+                   FROM feedback f
                    JOIN card_deliveries d ON d.delivery_id = f.delivery_id
                    JOIN article_snapshots s ON s.snapshot_id = d.snapshot_id
-                   WHERE f.delivery_id = ?
-                   ORDER BY f.revision_id DESC LIMIT 1""",
+                   WHERE f.delivery_id = ?""",
                 (delivery_id,),
             ).fetchone()
             return FeedbackEvidence(*row) if row is not None else None
@@ -642,7 +657,7 @@ class SQLiteStorage:
         if connection is None:
             return ()
         try:
-            if not _table_exists(connection, "feedback_revisions"):
+            if not _table_exists(connection, "feedback"):
                 return ()
             return (
                 _feedback_evidence(connection)
@@ -654,7 +669,7 @@ class SQLiteStorage:
 
     # -- Preference profiles ---------------------------------------------
 
-    def profile_snapshot(self, *, cutoff_at: str | None = None) -> ProfileSnapshot:
+    def profile_snapshot(self) -> ProfileSnapshot:
         """Read-only even on an unmigrated database; release before model I/O."""
 
         connection = self._open_for_read(True)
@@ -663,9 +678,9 @@ class SQLiteStorage:
         try:
             connection.execute("BEGIN")
             active = _read_profile(connection)
-            processed = active.last_feedback_revision_id if active else 0
+            processed = active.last_feedback_change_seq if active else 0
             full_cutoff = (
-                active.update.last_full_feedback_revision_id
+                active.update.last_full_feedback_change_seq
                 if active and active.update
                 else 0
             )
@@ -682,38 +697,21 @@ class SQLiteStorage:
             cutoff = new_count = since_full = 0
             edited = False
             feedback = ()
-            if _table_exists(connection, "feedback_revisions"):
-                cutoff, new_count, since_full = connection.execute(
-                    """SELECT coalesce(max(revision_id), 0),
-                              count(CASE WHEN revision_id > ? THEN 1 END),
-                              count(CASE WHEN revision_id > ? THEN 1 END)
-                       FROM feedback_revisions
-                       WHERE (? IS NULL OR created_at <= ?)""",
-                    (processed, full_cutoff, cutoff_at, cutoff_at),
-                ).fetchone()
-                # A manual update may already have consumed newer feedback.
-                cutoff = max(cutoff, processed)
+            if _table_exists(connection, "feedback"):
+                cutoff = _feedback_change_seq(connection)
+                new_count = cutoff - processed
+                since_full = cutoff - full_cutoff
                 feedback = _feedback_evidence(connection, cutoff=cutoff)
-                edited = (
-                    connection.execute(
-                        """SELECT 1 FROM feedback_revisions new
-                       WHERE new.revision_id > ? AND new.revision_id <= ?
-                       AND EXISTS (
-                           SELECT 1 FROM feedback_revisions old
-                           WHERE old.delivery_id = new.delivery_id
-                             AND old.revision_id <= ?
-                       ) LIMIT 1""",
-                        (processed, cutoff, processed),
-                    ).fetchone()
-                    is not None
+                edited = any(
+                    f.created_seq <= processed < f.change_seq for f in feedback
                 )
             return ProfileSnapshot(
                 active=active,
                 feedback=feedback,
-                cutoff_revision_id=cutoff,
+                cutoff_change_seq=cutoff,
                 next_version=next_version,
-                new_revision_count=new_count,
-                revisions_since_rebuild=since_full,
+                new_change_count=new_count,
+                changes_since_rebuild=since_full,
                 edited_processed_feedback=edited,
                 rolled_back=rolled_back,
             )
@@ -743,7 +741,7 @@ class SQLiteStorage:
             rows = connection.execute(
                 """
                 SELECT version, parent_version, source, rollback_from_version,
-                       active, change_summary, last_feedback_revision_id,
+                       active, change_summary, last_feedback_change_seq,
                        notified_at, created_at
                 FROM preference_profiles ORDER BY version DESC
                 """
@@ -755,7 +753,7 @@ class SQLiteStorage:
                 "rollback_from_version",
                 "active",
                 "change_summary",
-                "last_feedback_revision_id",
+                "last_feedback_change_seq",
                 "notified_at",
                 "created_at",
             )
@@ -798,20 +796,34 @@ class SQLiteStorage:
                     or version != snapshot.next_version
                 ):
                     raise StorageError("active preference changed during model request")
-                if profile.last_feedback_revision_id != snapshot.cutoff_revision_id:
+                if profile.last_feedback_change_seq != snapshot.cutoff_change_seq:
                     raise StorageError(
                         "generated profile does not match feedback cutoff"
                     )
-                valid_ids = {
-                    row[0]
-                    for row in connection.execute(
-                        """SELECT max(revision_id) FROM feedback_revisions
-                           WHERE revision_id <= ? GROUP BY delivery_id""",
-                        (snapshot.cutoff_revision_id,),
-                    )
-                }
-                _validate_profile_evidence(profile, valid_ids)
-                saved = replace(profile, version=version, notified=False)
+                # Later edits have replaced their old values. The in-memory
+                # snapshot is the input; keep its cutoff so edits stay pending.
+                valid_changes = {f.feedback_id: f.change_seq for f in snapshot.feedback}
+                _validate_profile_evidence(profile, valid_changes)
+                current_changes = dict(
+                    connection.execute("SELECT delivery_id, change_seq FROM feedback")
+                )
+                for feedback_id, change_seq in valid_changes.items():
+                    current = current_changes.get(feedback_id)
+                    if current is None or (
+                        current != change_seq and current <= snapshot.cutoff_change_seq
+                    ):
+                        raise StorageError(
+                            "feedback snapshot no longer matches storage"
+                        )
+                outdated = sum(
+                    current_changes[i] != valid_changes[i] for i in profile.evidence_ids
+                )
+                saved = replace(
+                    profile,
+                    version=version,
+                    notified=False,
+                    outdated_evidence_count=outdated,
+                )
                 _insert_profile(connection, saved, parent_version=parent_version)
             except BaseException:
                 connection.rollback()
@@ -843,43 +855,35 @@ class SQLiteStorage:
                         "SELECT coalesce(max(version), 0) + 1 FROM preference_profiles"
                     ).fetchone()[0]
                 )
-                latest_feedback = int(
-                    connection.execute(
-                        "SELECT coalesce(max(revision_id), 0) FROM feedback_revisions"
-                    ).fetchone()[0]
-                )
+                latest_feedback = _feedback_change_seq(connection)
                 summary = f"回滚到 v{target_version}；现有反馈已标记为已处理"
                 current = _read_profile(connection)
-                processed = current.last_feedback_revision_id if current else 0
+                processed = current.last_feedback_change_seq if current else 0
                 full_cutoff = (
-                    current.update.last_full_feedback_revision_id
+                    current.update.last_full_feedback_change_seq
                     if current and current.update
                     else 0
                 )
-                revision_count, since_full = connection.execute(
-                    """SELECT count(CASE WHEN revision_id > ? THEN 1 END),
-                              count(CASE WHEN revision_id > ? THEN 1 END)
-                       FROM feedback_revisions""",
-                    (processed, full_cutoff),
-                ).fetchone()
+                change_count = latest_feedback - processed
+                since_full = latest_feedback - full_cutoff
                 saved = replace(
                     target,
                     version=version,
                     change_summary=summary,
-                    last_feedback_revision_id=latest_feedback,
+                    last_feedback_change_seq=latest_feedback,
                     notified=False,
                     update=PreferenceUpdate(
                         mode="rollback",
                         trigger="manual_rollback",
                         feedback_count=0,
-                        revision_count=revision_count,
-                        revisions_since_rebuild=since_full,
-                        last_full_feedback_revision_id=full_cutoff,
+                        change_count=change_count,
+                        changes_since_rebuild=since_full,
+                        last_full_feedback_change_seq=full_cutoff,
                         input_chars=0,
                     ),
                 )
-                # Rollback deliberately preserves historical evidence, including
-                # feedback since corrected; the next new revision forces a rebuild.
+                # Restore rules and evidence identities, never old feedback text.
+                # The next feedback change forces a rebuild from current values.
                 _insert_profile(
                     connection,
                     saved,
@@ -1117,20 +1121,27 @@ def _card_delivery(row: sqlite3.Row | tuple[object, ...]) -> CardDelivery:
     )
 
 
+def _feedback_change_seq(connection: sqlite3.Connection) -> int:
+    row = connection.execute(
+        "SELECT change_seq FROM feedback_state WHERE singleton = 1"
+    ).fetchone()
+    if row is None:
+        raise StorageError("feedback progress state is missing")
+    return int(row[0])
+
+
 def _feedback_evidence(
     connection: sqlite3.Connection, *, cutoff: int = 9_223_372_036_854_775_807
 ) -> tuple[FeedbackEvidence, ...]:
     rows = connection.execute(
-        """SELECT f.revision_id, f.delivery_id, s.article_key, f.sentiment,
-                  f.reason, s.title, s.category, s.summary, s.detail, f.created_at
-           FROM feedback_revisions f
+        """SELECT f.delivery_id, f.created_seq, f.change_seq,
+                  s.article_key, f.sentiment, f.reason, s.title,
+                  s.category, s.summary, s.detail, f.updated_at
+           FROM feedback f
            JOIN card_deliveries d ON d.delivery_id = f.delivery_id
            JOIN article_snapshots s ON s.snapshot_id = d.snapshot_id
-           WHERE f.revision_id <= ? AND f.revision_id = (
-               SELECT max(f2.revision_id) FROM feedback_revisions f2
-               WHERE f2.delivery_id = f.delivery_id AND f2.revision_id <= ?
-           ) ORDER BY f.revision_id""",
-        (cutoff, cutoff),
+           WHERE f.change_seq <= ? ORDER BY f.change_seq""",
+        (cutoff,),
     ).fetchall()
     return tuple(FeedbackEvidence(*row) for row in rows)
 
@@ -1143,7 +1154,7 @@ def _read_profile(
     clause = "active = 1" if version is None else "version = ?"
     row = connection.execute(
         """SELECT version, profile_json, evidence_ids_json, change_summary,
-                  last_feedback_revision_id, notified_at
+                  last_feedback_change_seq, notified_at
            FROM preference_profiles WHERE """
         + clause,
         () if version is None else (version,),
@@ -1161,15 +1172,22 @@ def _preference_profile(
     if format_version == PROFILE_FORMAT_VERSION:
         if not _table_exists(connection, "preference_entries"):
             raise StorageError("format v2 preference entries are missing")
-        evidence: dict[str, list[int]] = {}
-        for entry_id, revision in connection.execute(
-            """SELECT entry_id, feedback_revision_id FROM preference_entry_evidence
-               WHERE profile_version = ? ORDER BY feedback_revision_id""",
+        evidence: dict[str, list[tuple[int, int]]] = {}
+        for entry_id, feedback_id, change_seq in connection.execute(
+            """SELECT entry_id, feedback_id, feedback_change_seq
+               FROM preference_entry_evidence
+               WHERE profile_version = ? ORDER BY feedback_id""",
             (row[0],),
         ):
-            evidence.setdefault(entry_id, []).append(revision)
+            evidence.setdefault(entry_id, []).append((feedback_id, change_seq))
         entries = tuple(
-            PreferenceEntry(entry_id, category, text, tuple(evidence.get(entry_id, ())))
+            PreferenceEntry(
+                entry_id,
+                category,
+                text,
+                tuple(i for i, _ in evidence.get(entry_id, ())),
+                tuple(evidence.get(entry_id, ())),
+            )
             for entry_id, category, text in connection.execute(
                 """SELECT entry_id, category, text FROM preference_entries
                    WHERE profile_version = ? ORDER BY position""",
@@ -1181,13 +1199,20 @@ def _preference_profile(
     update = None
     if _table_exists(connection, "preference_updates"):
         update_row = connection.execute(
-            """SELECT mode, trigger, feedback_count, revision_count,
-                      revisions_since_rebuild, last_full_feedback_revision_id,
+            """SELECT mode, trigger, feedback_count, change_count,
+                      changes_since_rebuild, last_full_feedback_change_seq,
                       input_chars FROM preference_updates WHERE profile_version = ?""",
             (row[0],),
         ).fetchone()
         if update_row is not None:
             update = PreferenceUpdate(*update_row)
+    outdated_count = connection.execute(
+        """SELECT count(DISTINCT e.feedback_id)
+           FROM preference_entry_evidence e
+           JOIN feedback f ON f.delivery_id = e.feedback_id
+           WHERE e.profile_version = ? AND e.feedback_change_seq != f.change_seq""",
+        (row[0],),
+    ).fetchone()[0]
     return PreferenceProfile(
         version=int(row[0]),
         like_rules=tuple(str(value) for value in payload.get("like_rules", [])),
@@ -1196,15 +1221,18 @@ def _preference_profile(
         uncertainties=tuple(str(value) for value in payload.get("uncertainties", [])),
         evidence_ids=evidence_ids,
         change_summary=str(row[3]),
-        last_feedback_revision_id=int(row[4]),
+        last_feedback_change_seq=int(row[4]),
         notified=row[5] is not None,
         format_version=format_version,
         entries=entries,
         update=update,
+        outdated_evidence_count=outdated_count,
     )
 
 
-def _validate_profile_evidence(profile: PreferenceProfile, valid_ids: set[int]) -> None:
+def _validate_profile_evidence(
+    profile: PreferenceProfile, valid_changes: dict[int, int]
+) -> None:
     ids = [e.entry_id for e in profile.entries]
     if not ids or len(ids) != len(set(ids)):
         raise StorageError("preference entries are empty or have duplicate IDs")
@@ -1216,7 +1244,10 @@ def _validate_profile_evidence(profile: PreferenceProfile, valid_ids: set[int]) 
             or not entry.text.strip()
             or not entry.evidence_ids
             or any(type(i) is not int for i in entry.evidence_ids)
-            or not set(entry.evidence_ids) <= valid_ids
+            or not set(entry.evidence_ids) <= valid_changes.keys()
+            or len(entry.evidence_changes) != len(entry.evidence_ids)
+            or dict(entry.evidence_changes)
+            != {i: valid_changes.get(i) for i in entry.evidence_ids}
         ):
             raise StorageError(
                 "preference entry has missing, replaced or invalid evidence"
@@ -1237,7 +1268,7 @@ def _insert_profile(
     connection.execute(
         """INSERT INTO preference_profiles (
                version, parent_version, profile_json, evidence_ids_json,
-               change_summary, last_feedback_revision_id, source,
+               change_summary, last_feedback_change_seq, source,
                rollback_from_version, active
            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)""",
         (
@@ -1246,7 +1277,7 @@ def _insert_profile(
             json.dumps(profile.as_entry_dict(), ensure_ascii=False),
             json.dumps(profile.evidence_ids),
             profile.change_summary,
-            profile.last_feedback_revision_id,
+            profile.last_feedback_change_seq,
             "llm" if rollback_from_version is None else "rollback",
             rollback_from_version,
         ),
@@ -1259,11 +1290,11 @@ def _insert_profile(
         ],
     )
     connection.executemany(
-        "INSERT INTO preference_entry_evidence VALUES (?, ?, ?)",
+        "INSERT INTO preference_entry_evidence VALUES (?, ?, ?, ?)",
         [
-            (profile.version, e.entry_id, revision)
+            (profile.version, e.entry_id, feedback_id, change_seq)
             for e in profile.entries
-            for revision in e.evidence_ids
+            for feedback_id, change_seq in e.evidence_changes
         ],
     )
     if profile.update is not None:
@@ -1275,9 +1306,9 @@ def _insert_profile(
                 update.mode,
                 update.trigger,
                 update.feedback_count,
-                update.revision_count,
-                update.revisions_since_rebuild,
-                update.last_full_feedback_revision_id,
+                update.change_count,
+                update.changes_since_rebuild,
+                update.last_full_feedback_change_seq,
                 update.input_chars,
             ),
         )

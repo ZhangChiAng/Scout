@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC
 from typing import IO
 
 from .codex_runtime import ModelUnavailableError
@@ -63,9 +62,9 @@ async def prepare_profile(
     print(
         f"Preference update: mode={request.mode} trigger={request.trigger} "
         f"feedback_count={len(request.evidence)} "
-        f"new_revision_count={snapshot.new_revision_count} "
-        f"revisions_since_rebuild={snapshot.revisions_since_rebuild} "
-        f"cutoff_revision_id={snapshot.cutoff_revision_id} "
+        f"new_change_count={snapshot.new_change_count} "
+        f"changes_since_rebuild={snapshot.changes_since_rebuild} "
+        f"cutoff_change_seq={snapshot.cutoff_change_seq} "
         f"model={llm.config.model} reasoning_effort={llm.config.reasoning_effort} "
         f"input_chars={request.input_chars} (characters, not tokens).",
         file=output,
@@ -97,19 +96,10 @@ async def prepare_profile(
     return saved
 
 
-async def resolve_profile(storage, llm, notifier, config, *, mode, started_at, output):
+async def resolve_profile(storage, llm, notifier, config, *, mode, output):
     """Apply cutoff, resume notifications and update preferences in one place."""
     read_only = mode in {"dry-run", "profile-rebuild-preview"}
-    cutoff_at = None
-    if mode == "profile-update":
-        cutoff_at = (
-            started_at.replace(hour=19, minute=0, second=0, microsecond=0)
-            .astimezone(UTC)
-            .isoformat(timespec="milliseconds")
-            .replace("+00:00", "Z")
-        )
-        print(f"Preference feedback cutoff: {cutoff_at}", file=output, flush=True)
-    snapshot = storage.profile_snapshot(cutoff_at=cutoff_at)
+    snapshot = storage.profile_snapshot()
     if (
         mode == "profile-update"
         and snapshot.active is not None
@@ -123,7 +113,7 @@ async def resolve_profile(storage, llm, notifier, config, *, mode, started_at, o
         assert notifier is not None and snapshot.active is not None
         notified = notify_profile(storage, notifier, snapshot.active, config, output)
         snapshot = replace(snapshot, active=notified)
-    if mode == "profile-rebuild" and pending and not snapshot.new_revision_count:
+    if mode == "profile-rebuild" and pending and not snapshot.new_change_count:
         assert snapshot.active is not None
         profile = snapshot.active
         print(

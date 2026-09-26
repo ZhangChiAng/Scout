@@ -36,7 +36,8 @@ PREFERENCE_INSTRUCTIONS = """你是 Scout 的偏好归纳器，只服务一个�
   或把一次事件评价推广为整个对象、领域的喜恶。
 - 保留判断所需的明确背景、具体范围、否定、期限和例外，不抽象成空泛的相关性，
   不自行扩大或缩小范围、改变限制强度；区分对象关系事实与关注理由的主次。
-- 按修订先后处理变化，较新的明确更改只替代同一范围内的旧判断。重复反馈主要
+- 输入仅包含每张卡片当前反馈；按最后更新时间处理不同卡片间的偏好变化，
+  较新的明确更改只替代同一范围内的旧判断。重复反馈主要
   补充依据，不扩写含义；不要求每条反馈都产生条目。
 - 含义与适用条件相同才合并，不为不同原因杜撰共同解释。同类对象可合并列出，
   保留全部名称、关系和依据；新反馈只改变相关成员。通用判断表达一次。
@@ -90,31 +91,33 @@ def preference_request(
         mode, trigger = "rebuild", "initial"
     elif force_rebuild:
         mode, trigger = "rebuild", "manual"
-    elif snapshot.rolled_back and not snapshot.new_revision_count:
+    elif snapshot.rolled_back and not snapshot.new_change_count:
         # This takes priority over migration, even for a rollback to format v1.
         return None
     elif snapshot.rolled_back:
         mode, trigger = "rebuild", "feedback_after_rollback"
     elif active.format_version != PROFILE_FORMAT_VERSION or active.update is None:
         mode, trigger = "rebuild", "format_migration"
-    elif not snapshot.new_revision_count:
+    elif not snapshot.new_change_count:
         return None
     elif snapshot.edited_processed_feedback:
         mode, trigger = "rebuild", "processed_feedback_edited"
-    elif snapshot.revisions_since_rebuild >= PROFILE_REBUILD_INTERVAL:
-        mode, trigger = "rebuild", "revision_threshold"
+    elif snapshot.changes_since_rebuild >= PROFILE_REBUILD_INTERVAL:
+        mode, trigger = "rebuild", "change_threshold"
     else:
         mode, trigger = "incremental", "new_feedback"
 
     evidence = snapshot.feedback if mode == "rebuild" else snapshot.new_feedback
     if not evidence:
         raise LLMError("preference update has no effective feedback")
-    references = {f"f:{f.revision_id}": (f.revision_id,) for f in evidence}
+    references = {f"f:{f.feedback_id}": (f.feedback_id,) for f in evidence}
     if mode == "incremental":
         assert active is not None
-        valid_ids = {f.revision_id for f in snapshot.feedback}
+        valid_changes = {f.feedback_id: f.change_seq for f in snapshot.feedback}
         for entry in active.entries:
-            if not entry.evidence_ids or not set(entry.evidence_ids) <= valid_ids:
+            if not entry.evidence_ids or dict(entry.evidence_changes) != {
+                i: valid_changes.get(i) for i in entry.evidence_ids
+            }:
                 raise LLMError(
                     "current preference entry evidence is missing or replaced"
                 )
@@ -122,7 +125,7 @@ def preference_request(
         instructions = PREFERENCE_INSTRUCTIONS + (
             "本轮增量更新：结合 current_profile 与新增的 current_feedback，"
             "保留旧条目中仍有效的含义，输出完整偏好。"
-            "f:修订ID 引用本轮反馈，p:条目ID 引用上版条目，程序会展开其历史依据。"
+            "f:反馈ID 引用本轮反馈，p:条目ID 引用上版条目，程序会展开其仍有效的依据。"
         )
         previous_key = "current_profile"
         previous = active.as_entry_dict()
@@ -132,7 +135,7 @@ def preference_request(
             "与新闻语境。先仅依据这些反馈生成 entries，再对照"
             " previous_profile_for_change_summary_only 写 change_summary；"
             "旧偏好不作为结论或证据来源，缺少当前依据的旧结论不保留。"
-            "只能用 f:修订ID 引用本轮反馈，禁止 p: 引用。"
+            "只能用 f:反馈ID 引用本轮反馈，禁止 p: 引用。"
         )
         previous_key = "previous_profile_for_change_summary_only"
         previous = active.as_prompt_dict() if active else None
@@ -260,7 +263,7 @@ class PersonalizationLLM:
             )
         entries = []
         seen_ids = set()
-        valid_ids = {f.revision_id for f in request.snapshot.feedback}
+        valid_changes = {f.feedback_id: f.change_seq for f in request.snapshot.feedback}
         values = data["entries"]
         if not isinstance(values, list):
             raise LLMError("preference entries must be an array")
@@ -298,12 +301,18 @@ class PersonalizationLLM:
                     "preference entry references nonexistent or replaced evidence"
                 )
             evidence_ids = {
-                revision for ref in refs for revision in request.references[ref]
+                feedback_id for ref in refs for feedback_id in request.references[ref]
             }
-            if not evidence_ids or not evidence_ids <= valid_ids:
+            if not evidence_ids or not evidence_ids <= valid_changes.keys():
                 raise LLMError("expanded preference evidence is missing or replaced")
             entries.append(
-                PreferenceEntry(entry_id, category, text, tuple(sorted(evidence_ids)))
+                PreferenceEntry(
+                    entry_id,
+                    category,
+                    text,
+                    tuple(sorted(evidence_ids)),
+                    tuple((i, valid_changes[i]) for i in sorted(evidence_ids)),
+                )
             )
         if not entries:
             raise LLMError("preference response contains no supported conclusions")
@@ -311,10 +320,10 @@ class PersonalizationLLM:
         if len(summary) > 1200:
             raise LLMError("preference change summary exceeds schema limit")
         snapshot = request.snapshot
-        full_cutoff = snapshot.cutoff_revision_id
+        full_cutoff = snapshot.cutoff_change_seq
         if request.mode == "incremental":
             assert snapshot.active is not None and snapshot.active.update is not None
-            full_cutoff = snapshot.active.update.last_full_feedback_revision_id
+            full_cutoff = snapshot.active.update.last_full_feedback_change_seq
         return PreferenceProfile(
             version=snapshot.next_version,
             format_version=PROFILE_FORMAT_VERSION,
@@ -326,14 +335,14 @@ class PersonalizationLLM:
             ),
             evidence_ids=tuple(sorted({i for e in entries for i in e.evidence_ids})),
             change_summary=summary,
-            last_feedback_revision_id=snapshot.cutoff_revision_id,
+            last_feedback_change_seq=snapshot.cutoff_change_seq,
             update=PreferenceUpdate(
                 mode=request.mode,
                 trigger=request.trigger,
                 feedback_count=len(request.evidence),
-                revision_count=snapshot.new_revision_count,
-                revisions_since_rebuild=snapshot.revisions_since_rebuild,
-                last_full_feedback_revision_id=full_cutoff,
+                change_count=snapshot.new_change_count,
+                changes_since_rebuild=snapshot.changes_since_rebuild,
+                last_full_feedback_change_seq=full_cutoff,
                 input_chars=request.input_chars,
             ),
         )
@@ -443,7 +452,8 @@ def _required_string(data: dict[str, object], name: str) -> str:
 
 def _feedback_dict(item: FeedbackEvidence) -> dict[str, object]:
     return {
-        "revision_id": item.revision_id,
+        "feedback_id": item.feedback_id,
+        "updated_at": item.updated_at,
         "sentiment": item.sentiment,
         "reason": item.reason,
         "article": {

@@ -80,7 +80,7 @@ class ListMember:
     snapshot_id: int
     article: DigestArticle
     evaluation: PersonalizedEvaluation
-    profile_version: int
+    profile_version: int  # Negative values identify versions removed at baseline reset.
     status: str = "available"
 
 

@@ -210,7 +210,7 @@ class FeedbackHandler:
         card = build_recorded_card(
             delivery, latest, max_payload_bytes=self.max_payload_bytes
         )
-        toast = "反馈已记录" if write.created else "相同反馈已记录，无需重复提交"
+        toast = "反馈已记录" if write.changed else "相同反馈已记录，无需重复提交"
         return _response(card=card, toast=toast, toast_type="success")
 
 
