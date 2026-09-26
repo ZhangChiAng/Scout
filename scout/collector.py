@@ -284,6 +284,4 @@ def collect_source(
 ) -> CollectionBatch:
     """Collect the configured RSS source."""
 
-    if source.collector != "rss":
-        raise CollectionError(f"unsupported collector: {source.collector}")
     return RSSCollector(source, network).collect()

@@ -11,6 +11,7 @@ from contextlib import closing
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING
 
+from .database import transaction
 from .model import DigestArticle, NewsItem, PersonalizedEvaluation
 
 if TYPE_CHECKING:
@@ -133,7 +134,7 @@ class IssueState:
     ) -> None:
         # One full manifest per date; published lists keep their own immutable
         # snapshot IDs even if the publisher later edits the RSS content.
-        with closing(self.storage._connect()) as conn, conn:
+        with transaction(self.storage.path) as conn:
             conn.execute(
                 """INSERT INTO issue_snapshots VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(source, issue_date) DO UPDATE SET
@@ -285,8 +286,7 @@ class IssueState:
         chat_id: str,
         pages: Sequence[Sequence[ListMember]],
     ) -> tuple[FilteredList, ...]:
-        with closing(self.storage._connect()) as conn, conn:
-            conn.execute("BEGIN IMMEDIATE")
+        with transaction(self.storage.path) as conn:
             if not conn.execute(
                 "SELECT 1 FROM filtered_lists WHERE digest_key=?", (digest_key,)
             ).fetchone():
@@ -324,7 +324,7 @@ class IssueState:
         return self.lists(digest_key)
 
     def mark_list_sent(self, list_id: int, message_id: str, chat_id: str) -> None:
-        with closing(self.storage._connect()) as conn, conn:
+        with transaction(self.storage.path) as conn:
             conn.execute(
                 """UPDATE filtered_lists SET message_id=?, chat_id=?,
                 synced_revision=revision WHERE list_id=? AND message_id IS NULL""",
@@ -347,9 +347,7 @@ class IssueState:
             raise FeedbackError("正文请求缺少事件或表单数据")
         # Callback must return inside Feishu's 3-second deadline even if a
         # writer is busy; a timeout is safe to retry without losing requests.
-        with closing(self.storage._connect()) as conn, conn:
-            conn.execute("PRAGMA busy_timeout = 500")
-            conn.execute("BEGIN IMMEDIATE")
+        with transaction(self.storage.path, timeout=0.5) as conn:
             owner = conn.execute(
                 "SELECT open_id FROM scout_owner WHERE singleton=1"
             ).fetchone()
@@ -407,8 +405,7 @@ class IssueState:
             return count
 
     def recover(self) -> None:
-        with closing(self.storage._connect()) as conn, conn:
-            conn.execute("BEGIN IMMEDIATE")
+        with transaction(self.storage.path) as conn:
             ids = [
                 r[0]
                 for r in conn.execute(
@@ -427,8 +424,7 @@ class IssueState:
             conn.execute("UPDATE filtered_lists SET sync_attempts=0, sync_after=0")
 
     def claim(self) -> RevealRequest | None:
-        with closing(self.storage._connect()) as conn, conn:
-            conn.execute("BEGIN IMMEDIATE")
+        with transaction(self.storage.path) as conn:
             row = conn.execute(
                 """SELECT r.member_id, m.list_id, r.send_uuid, r.attempts, r.retry_at
                 FROM reveal_requests r JOIN filtered_list_members m USING(member_id)
@@ -450,8 +446,7 @@ class IssueState:
 
     def finish(self, request: RevealRequest, *, message_id: str, chat_id: str) -> None:
         m = request.member
-        with closing(self.storage._connect()) as conn, conn:
-            conn.execute("BEGIN IMMEDIATE")
+        with transaction(self.storage.path) as conn:
             delivery_id = self.storage._record_card_delivery(
                 conn,
                 snapshot_id=m.snapshot_id,
@@ -468,8 +463,7 @@ class IssueState:
             self._dirty(conn, request.list_id)
 
     def reconcile_delivery(self, request: RevealRequest) -> bool:
-        with closing(self.storage._connect()) as conn, conn:
-            conn.execute("BEGIN IMMEDIATE")
+        with transaction(self.storage.path) as conn:
             row = conn.execute(
                 "SELECT delivery_id FROM card_deliveries WHERE article_key=? LIMIT 1",
                 (request.member.article.article_key,),
@@ -484,7 +478,7 @@ class IssueState:
             return True
 
     def fail(self, request: RevealRequest, error: str) -> None:
-        with closing(self.storage._connect()) as conn, conn:
+        with transaction(self.storage.path) as conn:
             conn.execute(
                 """UPDATE reveal_requests SET status=?, retry_at=?, last_error=?
                 WHERE member_id=? AND status='sending'""",
@@ -511,14 +505,14 @@ class IssueState:
             return tuple(self._read_list(conn, value) for value in ids)
 
     def mark_synced(self, listing: FilteredList) -> None:
-        with closing(self.storage._connect()) as conn, conn:
+        with transaction(self.storage.path) as conn:
             conn.execute(
                 "UPDATE filtered_lists SET synced_revision=?, sync_attempts=0, last_error='' WHERE list_id=?",
                 (listing.revision, listing.list_id),
             )
 
     def fail_sync(self, listing: FilteredList, error: str) -> None:
-        with closing(self.storage._connect()) as conn, conn:
+        with transaction(self.storage.path) as conn:
             conn.execute(
                 """UPDATE filtered_lists SET sync_attempts=sync_attempts+1,
                 sync_after=?, last_error=? WHERE list_id=? AND revision=?""",

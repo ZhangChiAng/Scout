@@ -17,24 +17,7 @@ class SourceConfig:
     name: str
     url: str
     window_size: int = 7
-    collector: str = "rss"
     max_age_days: int | None = None
-
-    def __post_init__(self) -> None:
-        """Validate programmatic construction as strictly as TOML loading."""
-
-        name = _nonempty_string(self.name, "sources.name")
-        url = _source_url(self.url, "sources.url")
-        window_size = _positive_int(self.window_size, "sources.window_size")
-        collector = _enum_value(self.collector, "sources.collector", {"rss"})
-        if self.max_age_days is not None:
-            max_age_days = _positive_int(self.max_age_days, "sources.max_age_days")
-            object.__setattr__(self, "max_age_days", max_age_days)
-
-        object.__setattr__(self, "name", name)
-        object.__setattr__(self, "url", url)
-        object.__setattr__(self, "window_size", window_size)
-        object.__setattr__(self, "collector", collector)
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,31 +40,11 @@ class FeishuDeliveryConfig:
     receive_id: str
 
 
-@dataclass(frozen=True, slots=True, init=False)
+@dataclass(frozen=True, slots=True)
 class AppConfig:
-    sources: tuple[SourceConfig, ...]
+    source: SourceConfig
     network: NetworkConfig
     feishu: FeishuConfig
-
-    def __init__(
-        self,
-        sources: tuple[SourceConfig, ...],
-        network: NetworkConfig,
-        feishu: FeishuConfig,
-    ) -> None:
-        """Build an application config from a non-empty source tuple."""
-
-        if not isinstance(sources, tuple) or not sources:
-            raise ConfigError("sources must contain at least one source")
-        if not all(isinstance(entry, SourceConfig) for entry in sources):
-            raise ConfigError("sources must contain only SourceConfig values")
-        if network is None or feishu is None:
-            raise ConfigError("network and feishu configurations are required")
-
-        _validate_unique_source_names(sources)
-        object.__setattr__(self, "sources", sources)
-        object.__setattr__(self, "network", network)
-        object.__setattr__(self, "feishu", feishu)
 
 
 def load_config(path: str | Path = "config.toml") -> AppConfig:
@@ -95,13 +58,13 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
         ) from exc
 
     try:
-        unsupported = set(raw) - {"sources", "network", "feishu"}
+        unsupported = set(raw) - {"source", "network", "feishu"}
         if unsupported:
             names = ", ".join(sorted(unsupported))
             raise ConfigError(f"config contains unsupported keys: {names}")
         network_raw = raw["network"]
         feishu_raw = raw["feishu"]
-        sources = _load_sources(raw)
+        source = _load_source(raw)
         network = NetworkConfig(
             timeout_seconds=_positive_number(
                 network_raw["timeout_seconds"], "network.timeout_seconds"
@@ -125,7 +88,7 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
 
     if feishu.max_payload_bytes > 30 * 1024:
         raise ConfigError("feishu.max_payload_bytes must not exceed 30720")
-    return AppConfig(sources, network, feishu)
+    return AppConfig(source, network, feishu)
 
 
 def load_dotenv(
@@ -193,63 +156,25 @@ def resolve_feishu_delivery(
     )
 
 
-def _load_sources(raw: dict[str, object]) -> tuple[SourceConfig, ...]:
-    if "source" in raw:
+def _load_source(raw: dict) -> SourceConfig:
+    source = raw["source"]
+    required = {"name", "url", "window_size"}
+    if (
+        not isinstance(source, dict)
+        or not required <= set(source)
+        or set(source) - required - {"max_age_days"}
+    ):
         raise ConfigError(
-            "the legacy [source] table is no longer supported; use [[sources]]"
+            "[source] requires name/url/window_size and optional max_age_days"
         )
-    if "sources" not in raw:
-        raise ConfigError("missing config key: sources")
-
-    source_array = raw["sources"]
-    if not isinstance(source_array, list) or not source_array:
-        raise ConfigError("sources must be a non-empty array of tables")
-    sources: list[SourceConfig] = []
-    required = {"name", "url", "collector", "window_size"}
-    supported = required | {"max_age_days"}
-    for index, source_raw in enumerate(source_array, start=1):
-        prefix = f"sources[{index}]"
-        if not isinstance(source_raw, dict):
-            raise ConfigError(f"{prefix} must be a table")
-        missing = required - set(source_raw)
-        if missing:
-            names = ", ".join(sorted(missing))
-            raise ConfigError(f"{prefix} is missing required fields: {names}")
-        unsupported = set(source_raw) - supported
-        if unsupported:
-            names = ", ".join(sorted(unsupported))
-            raise ConfigError(f"{prefix} contains unsupported fields: {names}")
-        sources.append(
-            SourceConfig(
-                name=_nonempty_string(source_raw["name"], f"{prefix}.name"),
-                url=_source_url(source_raw["url"], f"{prefix}.url"),
-                window_size=_positive_int(
-                    source_raw["window_size"], f"{prefix}.window_size"
-                ),
-                collector=_enum_value(
-                    source_raw["collector"],
-                    f"{prefix}.collector",
-                    {"rss"},
-                ),
-                max_age_days=(
-                    _positive_int(source_raw["max_age_days"], f"{prefix}.max_age_days")
-                    if "max_age_days" in source_raw
-                    else None
-                ),
-            )
-        )
-    result = tuple(sources)
-    _validate_unique_source_names(result)
-    return result
-
-
-def _validate_unique_source_names(sources: tuple[SourceConfig, ...]) -> None:
-    seen: set[str] = set()
-    for source in sources:
-        normalized = source.name.casefold()
-        if normalized in seen:
-            raise ConfigError(f"source names must be unique: {source.name}")
-        seen.add(normalized)
+    return SourceConfig(
+        name=_nonempty_string(source["name"], "source.name"),
+        url=_source_url(source["url"], "source.url"),
+        window_size=_positive_int(source["window_size"], "source.window_size"),
+        max_age_days=_positive_int(source["max_age_days"], "source.max_age_days")
+        if "max_age_days" in source
+        else None,
+    )
 
 
 def _nonempty_string(value: object, name: str) -> str:
@@ -323,11 +248,3 @@ def _positive_number(value: object, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
         raise ConfigError(f"{name} must be a positive number")
     return float(value)
-
-
-def _enum_value(value: object, name: str, allowed: set[str]) -> str:
-    text = _nonempty_string(value, name)
-    if text not in allowed:
-        choices = ", ".join(sorted(allowed))
-        raise ConfigError(f"{name} must be one of: {choices}")
-    return text

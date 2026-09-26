@@ -411,8 +411,25 @@ class FeishuNotifier:
         send_uuid: str | None = None,
         chat_id: str | None = None,
     ) -> SentMessage:
+        return self._send("interactive", card, send_uuid=send_uuid, chat_id=chat_id)
+
+    def send_link(
+        self, title: str, url: str, *, send_uuid: str, chat_id: str
+    ) -> SentMessage:
+        return self._send(
+            "text", {"text": f"{title}\n{url}"}, send_uuid=send_uuid, chat_id=chat_id
+        )
+
+    def _send(
+        self,
+        message_type: str,
+        payload: dict,
+        *,
+        send_uuid: str | None,
+        chat_id: str | None,
+    ) -> SentMessage:
         try:
-            content = json.dumps(card, ensure_ascii=False, separators=(",", ":"))
+            content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
             request = (
                 CreateMessageRequest.builder()
                 .receive_id_type(
@@ -421,7 +438,7 @@ class FeishuNotifier:
                 .request_body(
                     CreateMessageRequestBody.builder()
                     .receive_id(chat_id or self.delivery.receive_id)
-                    .msg_type("interactive")
+                    .msg_type(message_type)
                     .content(content)
                     .uuid(send_uuid)
                     .build()
@@ -435,7 +452,7 @@ class FeishuNotifier:
             ) from exc
         if not response.success():
             code = getattr(response, "code", None)
-            raise NotificationError(f"Feishu rejected the card (code={code!r})")
+            raise NotificationError(f"Feishu rejected the message (code={code!r})")
         data = getattr(response, "data", None)
         message_id = getattr(data, "message_id", None)
         response_chat_id = getattr(data, "chat_id", None)

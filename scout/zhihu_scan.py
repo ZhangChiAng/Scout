@@ -4,7 +4,6 @@ import fcntl
 import hashlib
 import json
 import logging
-import sqlite3
 import threading
 import time
 import tomllib
@@ -13,10 +12,19 @@ from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .config import ConfigError
+from . import zhihu_delivery
+from .config import ConfigError, resolve_feishu_delivery
+from .database import connect
+from .locking import RunLockedError, sender_lock
 from .rules import Rules
 from .zhihu_client import CollectorClient, CollectorError
-from .zhihu_verify import evaluate_article, render_report, validate_article
+from .zhihu_verify import (
+    complete_body,
+    evaluate_article,
+    render_report,
+    score,
+    validate_article,
+)
 
 TERMINAL = {"completed", "partial_failed", "failed"}
 logger = logging.getLogger(__name__)
@@ -33,6 +41,8 @@ class ZhihuScanWorker:
         )
 
     def start(self) -> None:
+        with sender_lock(self.path):
+            zhihu_delivery.initialize(self.path)
         self.thread.start()
 
     def close(self) -> None:
@@ -65,7 +75,11 @@ def load_scan_config(path):
     if set(raw) != {"scan", "rules"}:
         raise ConfigError("知乎配置只允许 [scan] 和 [rules]")
     rules = Rules.load(raw["rules"])
+    if rules.fields != ("body",):
+        raise ConfigError("自动扫描 rules.fields 必须为 [body]")
     scan = raw["scan"]
+    if isinstance(scan, dict):
+        scan.setdefault("max_results", 5)
     if not isinstance(scan, dict) or set(scan) != {
         "queries",
         "max_unique",
@@ -75,7 +89,7 @@ def load_scan_config(path):
         raise ConfigError("scan 需要 queries/max_unique/max_results/detail_batch_size")
     for name, ceiling in (
         ("max_unique", 200),
-        ("max_results", 5),
+        ("max_results", scan["max_unique"]),
         ("detail_batch_size", 20),
     ):
         if type(scan[name]) is not int or not 1 <= scan[name] <= ceiling:
@@ -95,23 +109,17 @@ def load_scan_config(path):
 
 
 def _connect(path):
-    conn = sqlite3.connect(path, timeout=5)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def initialize(path):
-    with closing(_connect(path)) as conn, conn:
-        conn.execute("""CREATE TABLE IF NOT EXISTS zhihu_scans (
-            id TEXT PRIMARY KEY, created_at TEXT NOT NULL,
-            status TEXT NOT NULL, state_json TEXT NOT NULL
-        )""")
+    return connect(path, rows=True)
 
 
 def create_scan(database_path, config_path, request_uuid=None):
     config = load_scan_config(config_path)  # Before any HTTP, including health.
     scan_id = str(uuid.UUID(request_uuid)) if request_uuid else str(uuid.uuid4())
-    initialize(database_path)
+    delivery = resolve_feishu_delivery()
+    if delivery.receive_id_type != "chat_id":
+        raise ConfigError("知乎链接必须发送到飞书群 chat_id")
+    with sender_lock(database_path):
+        zhihu_delivery.initialize(database_path)
     with closing(_connect(database_path)) as conn:
         row = conn.execute(
             "SELECT state_json FROM zhihu_scans WHERE id=?", (scan_id,)
@@ -122,6 +130,8 @@ def create_scan(database_path, config_path, request_uuid=None):
         (directory / "raw").mkdir(parents=True, mode=0o700, exist_ok=True)
         state = {
             "id": scan_id,
+            "auto_notify": True,
+            "chat_id": delivery.receive_id,
             "created_at": datetime.now(UTC).isoformat(),
             "status": "running",
             "config": config,
@@ -153,7 +163,7 @@ def create_scan(database_path, config_path, request_uuid=None):
 
 def get_scan(database_path, scan_id=None):
     path = Path(database_path).resolve()
-    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as conn:
+    with closing(connect(path, read_only=True)) as conn:
         if not conn.execute(
             "SELECT 1 FROM sqlite_master WHERE name='zhihu_scans'"
         ).fetchone():
@@ -178,43 +188,6 @@ def _save(database_path, state):
         )
 
 
-def apply_reviews(database_path, scan_id, entries):
-    """Persist factual context review; rejected contexts reopen a bounded scan."""
-    with Path(str(database_path) + ".zhihu-scan.lock").open("a") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        state = get_scan(database_path, scan_id)
-        if state is None:
-            raise ConfigError("找不到待核对扫描")
-        by_key = {record["article_key"]: record for record in state["records"]}
-        for key, review in entries.items():
-            article = by_key.get(key)
-            if article is None or article["status"] != "body":
-                raise ConfigError("语境核对必须对应本次完整正文")
-            if hashlib.sha256(article["body"].encode()).hexdigest() != review.get(
-                "body_sha256"
-            ):
-                raise ConfigError("语境核对与正文哈希不符")
-            if (
-                type(review.get("gpt6_is_model")) is not bool
-                or not isinstance(review.get("notes"), str)
-                or not review["notes"].strip()
-            ):
-                raise ConfigError("语境核对需要明确布尔结论和说明")
-        reviews = {**state.get("semantic_reviews", {}), **entries}
-        state["semantic_reviews"] = reviews
-        state["semantic_exclusions"] = [
-            key for key, review in reviews.items() if review["gpt6_is_model"] is False
-        ]
-        if (
-            state["stop_reason"] == "max_results"
-            and summary(state)["eligible"] < state["config"]["scan"]["max_results"]
-        ):
-            state["status"], state["stop_reason"] = "running", ""
-        _save(database_path, state)
-        export_report(state)
-        return state
-
-
 def summary(state):
     rules = Rules.load(state["config"]["rules"])
     results = [evaluate_article(record, rules) for record in state["records"]]
@@ -225,12 +198,9 @@ def summary(state):
         "unique_candidates": len(state["candidates"]),
         "details_checked": len(results),
         "body_success": sum(row["article"]["status"] == "body" for row in results),
-        "eligible": sum(
-            row["eligible"]
-            and row["article"]["article_key"]
-            not in state.get("semantic_exclusions", [])
-            for row in results
-        ),
+        "eligible": sum(row["eligible"] for row in results),
+        "registered_links": state.get("registered_links", 0),
+        "auto_notify": state.get("auto_notify", False),
         "coverage": state["coverage"],
         "stop_reason": state["stop_reason"],
         "collector_run_id": (state["active"] or {}).get("collector_id"),
@@ -239,7 +209,6 @@ def summary(state):
         "login_error": (state["active"] or {}).get("login_error"),
         "errors": state["errors"],
         "last_error": state["last_error"],
-        "semantic_exclusions": state.get("semantic_exclusions", []),
     }
 
 
@@ -256,42 +225,9 @@ def export_report(state, rules=None):
         "errors": state["errors"],
     }
     _write(directory / "collection.json", collection)
-    results = [evaluate_article(record, rules) for record in records]
-    complete = [r for r in results if r["article"]["status"] == "body"]
-    hashes = {
-        name: hashlib.sha256((directory / name).read_bytes()).hexdigest()
-        for record in records
-        for name in record["raw_files"]
-    }
-    report = {
-        "schema_version": 1,
-        "scored_at": datetime.now(UTC).isoformat(),
-        "queries": collection["queries"],
-        "input_file": "collection.json",
-        "input_sha256": hashlib.sha256(
-            (directory / "collection.json").read_bytes()
-        ).hexdigest(),
-        "rules": rules.snapshot(),
-        "rules_sha256": hashlib.sha256(_json(rules.snapshot()).encode()).hexdigest(),
-        "raw_sha256": hashes,
-        "results": results,
-        "coverage": state["coverage"],
-        "collection_status": state["status"],
-        "errors": state["errors"],
-        "summary": {
-            "candidates": len(state["candidates"]),
-            "details_checked": len(results),
-            **{
-                status: sum(r["article"]["status"] == status for r in results)
-                for status in ("body", "partial_body", "summary_only", "failed")
-            },
-            "read_failures": sum(bool(r["article"]["read_error"]) for r in results),
-            "body_recalled": sum(r["recalled"] for r in complete),
-            "body_no_match": sum(not r["recalled"] for r in complete),
-            "retained": sum(r["retained"] for r in results),
-        },
-        "scope": "仅覆盖所列查询、实际页数与已请求详情。失败和未完成采集不能算零命中。规则只匹配文本，发送前另核对 GPT-6 模型语境。",
-    }
+    report = score(directory / "collection.json", rules)
+    report["summary"]["candidates"] = len(state["candidates"])
+    report["summary"]["details_checked"] = len(records)
     _write(directory / "scores.json", report)
     (directory / "scores.md").write_text(
         render_report(report)
@@ -322,52 +258,26 @@ def _record(client, state, raw):
     evidence = raw.get("evidence")
     if not isinstance(evidence, list) or not evidence:
         raise CollectorError("protocol", "缺少采集证据引用")
-    names = []
-    for entry in evidence:
-        sha = entry["sha256"]
-        if (
-            not isinstance(sha, str)
-            or len(sha) != 64
-            or any(c not in "0123456789abcdef" for c in sha)
-        ):
-            raise CollectorError("protocol", "无效证据哈希")
-        name = f"raw/{sha}.json"
-        local = Path(state["directory"]) / name
-        content = (
-            local.read_bytes() if local.exists() else client.evidence(entry["path"])
-        )
-        if hashlib.sha256(content).hexdigest() != sha:
-            raise CollectorError("protocol", "采集证据哈希不符")
-        content.decode("utf-8")
-        local.write_bytes(content)
-        names.append(name)
+    names = _fetch_evidence(client, state, evidence)
     article = validate_article({**raw, "raw_files": names})
-    if article["status"] == "body":
-        basis = article.get("completeness")
-        if (
-            not isinstance(basis, dict)
-            or not basis.get("basis")
-            or basis.get("verified") is not True
-            or basis.get("target_id") != article["content_id"]
-            or basis.get("target_type") != article["content_type"]
-            or basis.get("target_id_verified") is not True
-            or basis.get("content_field_present") is not True
-            or basis.get("limitations") != []
-        ):
-            raise CollectorError("protocol", "完整正文缺少可靠完整性依据")
+    if article["status"] == "body" and not complete_body(article):
+        raise CollectorError("protocol", "完整正文缺少可靠完整性依据")
     return article
 
 
 def _next(state):
     scan = state["config"]["scan"]
-    if summary(state)["eligible"] >= scan["max_results"]:
+    count = (
+        state.get("registered_links", 0)
+        if state.get("auto_notify")
+        else summary(state)["eligible"]
+    )
+    if count >= scan["max_results"]:
         state["stop_reason"] = "max_results"
         return None
     offset = state["detail_index"]
     if offset < len(state["candidates"]):
-        batch = min(
-            scan["detail_batch_size"], scan["max_results"] - summary(state)["eligible"]
-        )
+        batch = min(scan["detail_batch_size"], scan["max_results"] - count)
         items = state["candidates"][offset : offset + batch]
         label = f"detail:{offset}:{len(items)}"
         payload = {"kind": "detail", "items": items}
@@ -415,24 +325,9 @@ def _tick(database_path, state, client):
     if status != "waiting_login" and not result.get("login_required"):
         active.pop("login_status", None)
         active.pop("login_error", None)
-    active["evidence_files"] = []
-    for evidence in result.get("evidence", []):
-        sha = evidence["sha256"]
-        if (
-            not isinstance(sha, str)
-            or len(sha) != 64
-            or any(c not in "0123456789abcdef" for c in sha)
-        ):
-            raise CollectorError("protocol", "任务证据哈希无效")
-        local = Path(state["directory"]) / "raw" / (sha + ".json")
-        content = (
-            local.read_bytes() if local.exists() else client.evidence(evidence["path"])
-        )
-        if hashlib.sha256(content).hexdigest() != sha:
-            raise CollectorError("protocol", "任务证据哈希不符")
-        content.decode("utf-8")
-        local.write_bytes(content)
-        active["evidence_files"].append(str(local.relative_to(state["directory"])))
+    active["evidence_files"] = _fetch_evidence(
+        client, state, result.get("evidence", [])
+    )
     _save(database_path, state)
     if (
         status == "waiting_login"
@@ -538,7 +433,7 @@ def _tick(database_path, state, client):
     export_report(state)
 
 
-def resume_pending(database_path):
+def _resume_scan(database_path):
     """One finite step; the existing listener calls this after process restarts."""
     path = Path(database_path)
     if not path.exists():
@@ -563,7 +458,15 @@ def resume_pending(database_path):
         if time.time() < state.get("next_retry_at", 0):
             return
         try:
+            with sender_lock(path):
+                state["registered_links"] = zhihu_delivery.register(path, state)
+                _save(path, state)
             _tick(path, state, CollectorClient.from_env())
+            with sender_lock(path):
+                state["registered_links"] = zhihu_delivery.register(path, state)
+                _save(path, state)
+        except RunLockedError:
+            return
         except (
             CollectorError,
             ConfigError,
@@ -600,3 +503,37 @@ def resume_pending(database_path):
                 state["stop_reason"] = "collector_error"
             _save(path, state)
             export_report(state)
+
+
+def resume_pending(database_path):
+    """Collection and delivery share recovery between CLI and listener."""
+    if not Path(database_path).exists():
+        return
+    try:
+        _resume_scan(database_path)
+    finally:
+        # Terminal scans still have durable links to finish after a restart.
+        zhihu_delivery.recover(database_path)
+
+
+def _fetch_evidence(client, state, entries):
+    names = []
+    for entry in entries:
+        sha = entry["sha256"]
+        if (
+            not isinstance(sha, str)
+            or len(sha) != 64
+            or any(c not in "0123456789abcdef" for c in sha)
+        ):
+            raise CollectorError("protocol", "无效证据哈希")
+        name = f"raw/{sha}.json"
+        local = Path(state["directory"]) / name
+        content = (
+            local.read_bytes() if local.exists() else client.evidence(entry["path"])
+        )
+        if hashlib.sha256(content).hexdigest() != sha:
+            raise CollectorError("protocol", "采集证据哈希不符")
+        content.decode("utf-8")
+        local.write_bytes(content)
+        names.append(name)
+    return names

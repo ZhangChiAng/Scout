@@ -1,4 +1,4 @@
-# 仅本次单次采集；scan 不授权自动发送。
+# scan 自动向已配置飞书群发送合格标题和链接；score 只生成报告。
 [scan]
 max_unique = 200
 max_results = 5

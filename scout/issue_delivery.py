@@ -45,15 +45,9 @@ async def process_issue(
 ) -> None:
     state = IssueState(storage)
     try:
-        if saved_articles is None:
-            issue = parse_issue(item.content, page_url=item.url)
-            articles = normalize_articles(issue, digest_key=item.dedupe_key)
-            issue_date = issue.issue_date or issue_date_for(item)
-        else:
-            articles = saved_articles
-            issue_date = selected_date or issue_date_for(item)
-        if not articles:
-            raise ValueError("issue overview contains no entries")
+        issue_date, articles = prepare_issue(
+            item, saved_articles=saved_articles, selected_date=selected_date
+        )
     except Exception as exc:  # noqa: BLE001 - isolate malformed issue
         stats.failed += 1
         print(
@@ -68,8 +62,7 @@ async def process_issue(
         }
     else:
         try:
-            snapshots = storage.save_article_snapshots(articles)
-            state.save_issue(item, issue_date, articles)
+            snapshots = save_issue(storage, item, issue_date, articles)
         except Exception as exc:  # noqa: BLE001 - isolate snapshot transaction
             stats.failed += 1
             print(
@@ -368,3 +361,22 @@ async def _deliver_calibration(
                 f"Calibration completion write failed: {type(exc).__name__}",
                 file=output,
             )
+
+
+def prepare_issue(item, *, saved_articles=None, selected_date=None):
+    if saved_articles is None:
+        issue = parse_issue(item.content, page_url=item.url)
+        articles = normalize_articles(issue, digest_key=item.dedupe_key)
+        day = selected_date or issue.issue_date or issue_date_for(item)
+    else:
+        articles = saved_articles
+        day = selected_date or issue_date_for(item)
+    if not articles:
+        raise ValueError("issue overview contains no entries")
+    return day, articles
+
+
+def save_issue(storage, item, day, articles):
+    snapshots = storage.save_article_snapshots(articles)
+    IssueState(storage).save_issue(item, day, articles)
+    return snapshots

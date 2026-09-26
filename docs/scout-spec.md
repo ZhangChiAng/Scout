@@ -44,9 +44,9 @@ listener、档案审阅与回滚不调用模型。listener、发送和校准要�
 `chat_id` 群目标。按需正文以原列表保存
 的群 ID 为目标，之后配置变更不会改变旧列表的正文去向。
 
-`models.toml` 恰有一个模型，字段固定为 `model`、`protocol`、`base_url`、
-`api_key_env`；协议只允许 `openai_responses`，密钥变量只允许
-`SCOUT_LLM_API_KEY`，端点 URL 不得携带凭据、query 或 fragment。
+`config.toml` 使用单个 `[source]`，保留 name/url/window_size/max_age_days，固定 RSS，无 collector 字段。
+`models.toml` 使用 `[model]`，仅有 model/base_url。协议固定为 OpenAI Responses，密钥变量固定为
+`SCOUT_LLM_API_KEY`，端点 URL 不得携带凭据、query 或 fragment。配置校验集中在加载入口。
 
 Responses 请求固定 600 秒超时、关闭 SDK 重试、`store=false`。偏好归纳和条目
 评价统一设置 `reasoning.effort=max` 和 `max_output_tokens=65536`，预算包含思考
@@ -293,33 +293,30 @@ owner，不调用模型或在回调内逐条发送。后台线程收到唤醒后
 HTTP/JSON 协调，保存访问令牌，不导入采集器模块或读取采集器内部数据库。
 接口和部署步骤见[知乎本机采集说明](zhihu-validation.md)。
 
-`python -m scout.zhihu` 提供 `status/scan/score/preview/send-results`。
-查询、排序、页数、详情批量和候选上限由独立配置指定；搜索仅发现候选，随后按
-内容类型及 ID 请求详情并去重。查询最多各三页、200 篇唯一候选、5 篇结果，
-不限定发布时间。记录实际覆盖、失败和正文完整性依据，不能将采集失败算零命中。
+`python -m scout.zhihu` 仅提供 `status/scan/score`。新扫描保存自动通知标记、规则和目标群。
+查询、排序、页数、批量、正文规则均由配置决定；每个查询最多三页，max_unique 在 1–200，
+max_results 默认 5，允许不超过 max_unique 的正整数。当前主题只是默认配置。
+搜索后按 ID 请求详情，校验完整性与证据哈希。失败、摘要和部分正文不能用于通知。
 
-规则支持可选 fields，默认标题、摘要和正文分别匹配；当前采集配置仅匹配 body。
-正则忽略大小写，先召回，再将字面关键词权重每篇累计一次并比较阈值。非法规则
-在网络请求前拒绝；同一正文可重新评分。仅完整正文且规则通过的记录可发送；
-正文中的 GPT-6 还必须经实际上下文核对确认指模型，同时含字面“斩杀线”。
-GPT-5.6 不算 GPT-6；规则判断不宣称具有语义理解能力。
+每批正文保存后按发现顺序登记合格新文章。历史已送达和其他扫描已登记文章不占结果额度。
+每篇发送一条“标题＋换行＋原文 URL”文本消息。`score` 只生成报告，不改变通知队列。
+不再支持正文卡片、人工语境核对文件、preview/send-test/send-results 或旧模块转发。
 
-登录通过独立采集器的 Cookie 文件导入完成，并以实际账户接口验证结果为准。
-Scout 的 `status` 直接读取采集器登录状态。缺少有效会话时扫描保持 `waiting_login`；
-导入有效 Cookie 后，采集器继续原任务，现有 listener 中的扫描线程每 5 秒推进一次
-已保存扫描。Scout 和采集器分别持久化任务 ID，重启后恢复协调；网络、限流、
-额外验证及登录失效分别处理，任意 403 或超时不能直接清除会话。
+`zhihu_link_deliveries` 固定文章键、扫描归属、标题、URL、群、UUID、状态、尝试次数、
+重试时间和消息 ID。先落库再发消息，网络期间不持有 SQLite 事务。CLI 与 listener 共用
+恢复流程及进程锁，扫描终态仍推进通知。每条自动尝试最多三次，间隔至少 5 秒、15 秒；
+耗尽暂停该扫描的后续链接。`scan --run-id` 重置失败项的尝试次数，保留 UUID 与内容。
+成功送达记录全局去重，旧 `rule_test_deliveries` 的 delivered 记录同样参与去重。
+历史扫描没有 auto_notify 标记，不因升级补发；旧待发卡片不会被新队列接管。
 
-结果按发现顺序发送，最多 5 篇。语境核对文件绑定正文哈希，记录事实判断。
-`scan` 保存采集结果；只有执行 `send-results` 才固定发送范围。
-独立发送表先保存内容、规则、证据、
-卡片、目标群和 UUID，再调用飞书；成功保存消息 ID，已成功文章默认跳过。
-待发送恢复使用原 SQLite 快照，不依赖原文持续可访问，也不改变 UUID。
-卡片截断后保留 GPT-6 和关键词各自的命中上下文，按完整卡片字节数校验。
+首次启用新表必须在 sender 锁内通过 SQLite backup API 备份现有数据库，并确认备份
+integrity_check 为 ok 后建表。所有历史表、偏好版本、日报快照和采集证据保留。
+初始化在写入口或后台任务启动时进行，普通读取不执行建表或迁移。
 
-采集采用单次任务，没有周期采集 timer。需要平台额外验证时，保留会话与任务并
-暂停采集；通过独立采集器的 [Cookie 导入入口](zhihu-cookie-import.md)
-恢复登录，账户验证通过后继续原任务。
+登录由独立采集器的 Cookie 导入和实际账户验证完成。无有效会话时扫描等待，验证通过
+继续原任务。listener 后台线程每 5 秒推进；采集采用单次任务，没有周期采集 timer。
+平台额外验证不能绕过，登录恢复见 [Cookie 导入说明](zhihu-cookie-import.md)。
+操作、退出码及证据文件见 [知乎采集说明](zhihu-validation.md)。
 
 历史日报快照的两处 NewsItem 反序列化入口仅忽略 `first_seen_at`、`updated_at`、
 `summary_html` 三个已知扩展字段。其余未知字段仍报错，不改写原始快照或数据库表。

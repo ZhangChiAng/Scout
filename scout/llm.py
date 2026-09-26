@@ -203,9 +203,7 @@ def preference_request(
 @dataclass(frozen=True, slots=True)
 class ModelConfig:
     model: str
-    protocol: str
     base_url: str
-    api_key_env: str
 
 
 class LLMError(RuntimeError):
@@ -235,28 +233,17 @@ def load_models_config(path: str | Path = "models.toml") -> ModelConfig:
             f"cannot load models config {config_path}: {type(exc).__name__}"
         ) from exc
 
-    if set(raw) != {"models"}:
-        raise ConfigError("models config must contain only the models array")
-    models = raw.get("models")
+    model_raw = raw.get("model")
     if (
-        not isinstance(models, list)
-        or len(models) != 1
-        or not isinstance(models[0], dict)
+        set(raw) != {"model"}
+        or not isinstance(model_raw, dict)
+        or set(model_raw) != {"model", "base_url"}
     ):
-        raise ConfigError("models config must contain exactly one model")
-    model_raw = models[0]
-    expected = {"model", "protocol", "base_url", "api_key_env"}
-    if set(model_raw) != expected:
-        raise ConfigError("model config must contain exactly four supported fields")
-    model = _nonempty_string(model_raw["model"], "models.model")
-    protocol = _nonempty_string(model_raw["protocol"], "models.protocol")
-    if protocol != "openai_responses":
-        raise ConfigError("models.protocol must be openai_responses")
-    base_url = _safe_endpoint(model_raw["base_url"], "models.base_url")
-    api_key_env = _nonempty_string(model_raw["api_key_env"], "models.api_key_env")
-    if api_key_env != LLM_API_KEY_ENV:
-        raise ConfigError(f"models.api_key_env must be {LLM_API_KEY_ENV}")
-    return ModelConfig(model, protocol, base_url, api_key_env)
+        raise ConfigError("use [model] with only model and base_url")
+    return ModelConfig(
+        _nonempty_string(model_raw["model"], "model.model"),
+        _safe_endpoint(model_raw["base_url"], "model.base_url"),
+    )
 
 
 def resolve_api_key(
@@ -265,9 +252,9 @@ def resolve_api_key(
     environ: dict[str, str] | os._Environ[str] | None = None,
 ) -> str:
     source = os.environ if environ is None else environ
-    value = source.get(config.api_key_env)
+    value = source.get(LLM_API_KEY_ENV)
     if not value:
-        raise ConfigError(f"{config.api_key_env} is required")
+        raise ConfigError(f"{LLM_API_KEY_ENV} is required")
     return value
 
 

@@ -1,22 +1,16 @@
-"""Score saved Zhihu text and prepare an immutable delivery snapshot."""
+"""Validate saved Zhihu evidence and produce local scoring reports."""
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
-import os
 import re
-import sqlite3
-import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .config import ConfigError, load_config, load_dotenv
-from .locking import RunLockedError
-from .notifier import NotificationError
-from .rules import Rules, TextArticle, load_rules
+from .config import ConfigError
+from .rules import Rules, TextArticle
 
 STATUSES = {
     "body": "正文",
@@ -24,10 +18,6 @@ STATUSES = {
     "summary_only": "仅摘要",
     "failed": "失败",
 }
-
-
-def read_json(path: Path):
-    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def write_json(path: Path, value) -> None:
@@ -139,7 +129,7 @@ def evaluate_article(article: dict, rules: Rules) -> dict:
         evaluation = rules.evaluate(
             TextArticle(*(article[name] for name in ("title", "summary", "body")))
         )
-    eligible = article["status"] == "body" and evaluation["retained"]
+    eligible = complete_body(article) and evaluation["retained"]
     return {
         "article": article,
         **evaluation,
@@ -149,8 +139,7 @@ def evaluate_article(article: dict, rules: Rules) -> dict:
     }
 
 
-def score(input_path: Path, rules_path: Path) -> dict:
-    rules = load_rules(rules_path)  # Always validate before consuming records.
+def score(input_path: Path, rules: Rules) -> dict:
     raw = input_path.read_bytes()
     collection = json.loads(raw)
     if (
@@ -177,11 +166,9 @@ def score(input_path: Path, rules_path: Path) -> dict:
     unique = {}
     for article in articles:
         unique.setdefault(article["article_key"], article)
-    hashes = {
-        name: digest(evidence_file(input_path.parent, name).read_bytes())
-        for article in unique.values()
-        for name in article["raw_files"]
-    }
+    hashes = {}
+    for article in unique.values():
+        hashes.update(validate_evidence(input_path.parent, article))
     results = [evaluate_article(a, rules) for a in unique.values()]
     complete = [r for r in results if r["article"]["status"] == "body"]
     counts = {
@@ -195,7 +182,9 @@ def score(input_path: Path, rules_path: Path) -> dict:
         "input_file": input_path.name,
         "input_sha256": digest(raw),
         "rules": rules.snapshot(),
-        "rules_sha256": digest(rules_path.read_bytes()),
+        "rules_sha256": digest(
+            json.dumps(rules.snapshot(), ensure_ascii=False, sort_keys=True).encode()
+        ),
         "raw_sha256": hashes,
         "results": results,
         "collection_status": collection.get("status", "historical"),
@@ -280,127 +269,35 @@ def render_report(report: dict) -> str:
     return "\n".join(lines)
 
 
-def preview(
-    run_dir: Path, report_name: str, article_key: str, chat_id: str, limit: int
-) -> dict:
-    from .rule_test import build_card, new_preview
-
-    report = read_json(run_file(run_dir, report_name))
-    rules = Rules.load(report["rules"])
-    result = next(
-        (r for r in report["results"] if r["article"]["article_key"] == article_key),
-        None,
+def complete_body(article):
+    basis = article.get("completeness")
+    return (
+        article["status"] == "body"
+        and isinstance(basis, dict)
+        and bool(basis.get("basis"))
+        and basis.get("verified") is True
+        and basis.get("target_id") == article["content_id"]
+        and basis.get("target_type") == article["content_type"]
+        and basis.get("target_id_verified") is True
+        and basis.get("content_field_present") is True
+        and basis.get("limitations") == []
     )
-    if result is None:
-        raise ConfigError("报告中找不到指定文章")
-    article = validate_article(result["article"])
-    if evaluate_article(article, rules) != result or not result["eligible"]:
-        raise ConfigError("文章不是通过筛选的完整正文，或评分记录已变动")
-    evidence = []
+
+
+def validate_evidence(directory, article):
+    validate_article(article)
+    hashes = {}
+    references = {entry["sha256"] for entry in article.get("evidence", [])}
     for name in article["raw_files"]:
-        raw = evidence_file(run_dir, name).read_bytes()
-        sha = digest(raw)
-        if sha != report["raw_sha256"].get(name):
-            raise ConfigError(f"原始采集证据已变动：{name}")
-        evidence.append({"path": name, "sha256": sha, "content": raw.decode("utf-8")})
-    return new_preview(
-        result, rules.snapshot(), evidence, build_card(result, limit), chat_id, limit
-    )
-
-
-def legacy_main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    commands = parser.add_subparsers(dest="command", required=True)
-    scoring = commands.add_parser("score", help="本地评分，不联系模型/飞书或 SQLite")
-    scoring.add_argument("--input", type=Path, required=True)
-    scoring.add_argument("--rules", type=Path, required=True)
-    scoring.add_argument("--output-prefix", default="scores")
-    showing = commands.add_parser("preview", help="生成具体文章与目标群预览")
-    showing.add_argument("--run-dir", type=Path, required=True)
-    showing.add_argument("--report", default="scores.json")
-    showing.add_argument("--article-key", required=True)
-    showing.add_argument("--chat-id", help="默认读取 .env 中的目标 chat_id")
-    showing.add_argument("--output", default="preview.json")
-    showing.add_argument("--config", default="config.toml")
-    sending = commands.add_parser("send-test", help="授权发送指定预览，或按文章键恢复")
-    sending.add_argument("--article-key", required=True)
-    sending.add_argument(
-        "--preview", type=Path, help="首次发送需要；恢复仅用数据库快照"
-    )
-    sending.add_argument("--approve", help="已明确授权的预览 SHA-256；省略则交互确认")
-    sending.add_argument("--database", type=Path)
-    sending.add_argument("--config", default="config.toml")
-    args = parser.parse_args(argv)
-    try:
-        if args.command == "score":
-            report = score(args.input, args.rules)
-            json_path = run_file(args.input.parent, args.output_prefix + ".json")
-            md_path = run_file(args.input.parent, args.output_prefix + ".md")
-            protected = {args.input.resolve(), args.rules.resolve()}
-            if json_path in protected or md_path in protected:
-                raise ConfigError("输出不能覆盖采集输入或规则")
-            write_json(json_path, report)
-            md_path.write_text(render_report(report), encoding="utf-8")
-            print(json.dumps(report["summary"], ensure_ascii=False))
-            # Incomplete collection is explicitly distinguishable from no match.
-            return (
-                2
-                if report["summary"]["body"] < report["summary"]["candidates"]
-                or report["collection_status"] not in {"completed", "historical"}
-                else 0
-            )
-        from .rule_test import approval_digest, preview_display, send_test
-
-        load_dotenv()
-        config = load_config(args.config)
-        if args.command == "preview":
-            chat_id = args.chat_id
-            if chat_id is None:
-                if os.environ.get("FEISHU_RECEIVE_ID_TYPE") != "chat_id":
-                    raise ConfigError("预览需要 --chat-id 或 .env 中的群 chat_id")
-                chat_id = os.environ.get("FEISHU_RECEIVE_ID", "")
-            payload = preview(
-                args.run_dir,
-                args.report,
-                args.article_key,
-                chat_id,
-                config.feishu.max_payload_bytes,
-            )
-            output_path = run_file(args.run_dir, args.output)
-            if output_path == run_file(args.run_dir, args.report):
-                raise ConfigError("预览不能覆盖评分报告")
-            write_json(output_path, payload)
-            print(json.dumps(preview_display(payload), ensure_ascii=False, indent=2))
-            print("授权摘要：" + approval_digest(payload))
-            return 0
-        return send_test(
-            database_path=args.database
-            or Path(os.environ.get("SCOUT_DB_PATH", "data/scout.sqlite3")),
-            article_key=args.article_key,
-            preview_path=args.preview,
-            approval=args.approve,
-            config=config,
-            output=sys.stdout,
-        )
-    except (
-        ConfigError,
-        OSError,
-        ValueError,
-        KeyError,
-        TypeError,
-        sqlite3.Error,
-        RunLockedError,
-        NotificationError,
-    ) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-
-
-def main(argv: list[str] | None = None) -> int:
-    from .zhihu import main as cli
-
-    return cli(argv)
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+        sha = digest(evidence_file(directory, name).read_bytes())
+        if references and sha not in references:
+            raise ConfigError("原始采集证据哈希不符")
+        if (
+            re.fullmatch(r"[0-9a-f]{64}\.json", Path(name).name)
+            and Path(name).stem != sha
+        ):
+            raise ConfigError("原始采集证据文件名与哈希不符")
+        hashes[name] = sha
+    if references and not references <= set(hashes.values()):
+        raise ConfigError("原始采集证据不完整")
+    return hashes

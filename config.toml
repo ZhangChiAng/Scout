@@ -1,7 +1,6 @@
-[[sources]]
+[source]
 name = "juya-ai-daily"
 url = "https://daily.juya.uk/rss.xml"
-collector = "rss"
 window_size = 7
 max_age_days = 3
 

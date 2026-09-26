@@ -8,7 +8,7 @@ Scout 是单一 owner 自用的 AI 新闻个性化工具。它从
 
 橘鸦业务只使用 RSS 内容，不使用 embedding、向量数据库、数值兴趣分，也不做
 多用户产品设计。另有独立的[知乎本机采集](docs/zhihu-validation.md)：通过本机
-HTTP 采集正文，按规则筛选并保存发送快照。权威行为见 [Scout 规格](docs/scout-spec.md)。
+HTTP 采集正文，按配置筛选，自动发送标题和原文链接。权威行为见 [Scout 规格](docs/scout-spec.md)。
 
 ## 准备
 
@@ -28,14 +28,14 @@ cp models.example.toml models.toml
 - `FEISHU_RECEIVE_ID_TYPE=chat_id`、`FEISHU_RECEIVE_ID`：发送、listener 与校准的群目标；
 - `SCOUT_DB_PATH`：可选，默认 `data/scout.sqlite3`。
 
-编辑 `models.toml`，配置唯一一个支持 OpenAI Responses 契约的模型端点。协议固定
+编辑 `models.toml`，在 `[model]` 下只设置 `model` 和 `base_url`。模型端点支持 OpenAI Responses 契约。协议固定
 为 `openai_responses`，环境变量名固定为 `SCOUT_LLM_API_KEY`。端点必须支持
 `text.format` JSON Schema、`store=false`、`output_text`、`status` 与
 `incomplete_details`；Scout 不降级成自由文本解析。
 偏好归纳和评价均设置 `reasoning.effort=max`，保持 `max_output_tokens=65536`、
 600 秒超时，关闭 SDK 自动重试。
 
-`config.toml` 只配置橘鸦 RSS、网络限制和飞书卡片最大字节数。来源名是 SQLite
+`config.toml` 使用单个 `[source]` 配置橘鸦 RSS、网络限制和飞书卡片最大字节数。来源名是 SQLite
 持久化身份，建立基线后不要修改。
 
 ## 飞书应用
@@ -260,3 +260,5 @@ Scout 只通过 HTTP 接入；登录使用采集器的 Cookie 文件导入，`sc
 
 部署、命令和恢复说明见[知乎本机采集](docs/zhihu-validation.md)，Cookie 登录操作见
 [Cookie 文件导入](docs/zhihu-cookie-import.md)。
+
+配置格式与知乎旧命令的迁移步骤见 [重构迁移说明](docs/refactor-migration.md)。

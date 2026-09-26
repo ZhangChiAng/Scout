@@ -53,4 +53,4 @@ CLI 从采集器环境或其 `.env` 读取访问令牌，将规范化 Cookie 写
 导入结果记录是历史结果；当前会话状态以 `GET /v1/login` 为准。原任务按已保存分页
 位置继续，不新建扫描。额外验证、限流和网络问题保留具体分类。通过
 `python -m scout.zhihu status` 查看 Cookie 登录状态及原任务进度。
-真实搜索、正文语境审核和至多 5 篇发送沿用[既有流程](zhihu-validation.md)。
+真实搜索、正文筛选和自动链接通知见[采集流程](zhihu-validation.md)。

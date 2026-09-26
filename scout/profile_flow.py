@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC
 from typing import IO
 
 from .config import AppConfig
@@ -92,3 +93,50 @@ async def prepare_profile(
     saved = storage.save_profile(generated, snapshot=snapshot)
     print(f"Preference profile v{saved.version} activated.", file=output, flush=True)
     return saved
+
+
+async def resolve_profile(storage, llm, notifier, config, *, mode, started_at, output):
+    """Apply cutoff, resume notifications and update preferences in one place."""
+    read_only = mode in {"dry-run", "profile-rebuild-preview"}
+    cutoff_at = None
+    if mode == "profile-update":
+        cutoff_at = (
+            started_at.replace(hour=19, minute=0, second=0, microsecond=0)
+            .astimezone(UTC)
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z")
+        )
+        print(f"Preference feedback cutoff: {cutoff_at}", file=output, flush=True)
+    snapshot = storage.profile_snapshot(cutoff_at=cutoff_at)
+    if (
+        mode == "profile-update"
+        and snapshot.active is not None
+        and snapshot.active.notified
+        and preference_request(snapshot) is None
+    ):
+        print("No preference changes or pending notification.", file=output)
+        return None, snapshot
+    pending = snapshot.active is not None and not snapshot.active.notified
+    if pending and not read_only:
+        assert notifier is not None and snapshot.active is not None
+        notified = notify_profile(storage, notifier, snapshot.active, config, output)
+        snapshot = replace(snapshot, active=notified)
+    if mode == "profile-rebuild" and pending and not snapshot.new_revision_count:
+        assert snapshot.active is not None
+        profile = snapshot.active
+        print(
+            "Pending profile notification retried; no new model request.",
+            file=output,
+        )
+    else:
+        profile = await prepare_profile(
+            storage, llm, mode=mode, output=output, snapshot=snapshot
+        )
+    if (
+        mode in {"send", "profile-rebuild", "profile-update"}
+        and profile.version > 0
+        and not profile.notified
+    ):
+        assert notifier is not None
+        profile = notify_profile(storage, notifier, profile, config, output)
+    return profile, snapshot

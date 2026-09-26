@@ -7,6 +7,7 @@ from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 
+from .database import connect, transaction
 from .issue_state import ISSUE_SCHEMAS
 from .locking import sender_lock
 from .model import (
@@ -275,8 +276,7 @@ class SQLiteStorage:
         delivered = list(items)
         if not delivered:
             return
-        self.initialize()
-        with closing(sqlite3.connect(self.path)) as connection, connection:
+        with transaction(self.path) as connection:
             for item in delivered:
                 dedupe_key = item.dedupe_key
                 connection.execute(
@@ -320,8 +320,7 @@ class SQLiteStorage:
         if any(item.source != source for item in baseline):
             raise ValueError("all baseline items must belong to the source")
 
-        self.initialize()
-        with closing(sqlite3.connect(self.path)) as connection:
+        with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
                 if connection.execute(
@@ -358,7 +357,6 @@ class SQLiteStorage:
         snapshots = list(articles)
         if not snapshots:
             return {}
-        self.initialize()
         with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
@@ -459,8 +457,7 @@ class SQLiteStorage:
     ) -> int:
         if purpose not in {"calibration", "personalized"}:
             raise ValueError("unsupported card delivery purpose")
-        self.initialize()
-        with closing(self._connect()) as connection, connection:
+        with transaction(self.path) as connection:
             return self._record_card_delivery(
                 connection,
                 snapshot_id=snapshot_id,
@@ -563,7 +560,6 @@ class SQLiteStorage:
             raise FeedbackError("反馈原因必须为 1–500 字")
         if not open_id:
             raise FeedbackError("回调缺少 open_id")
-        self.initialize()
         with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
@@ -903,8 +899,7 @@ class SQLiteStorage:
     def mark_profile_notified(
         self, version: int, *, message_id: str, chat_id: str
     ) -> None:
-        self.initialize()
-        with closing(self._connect()) as connection, connection:
+        with transaction(self.path) as connection:
             cursor = connection.execute(
                 """
                 UPDATE preference_profiles
@@ -958,8 +953,7 @@ class SQLiteStorage:
         values = list(evaluations)
         if not values:
             return
-        self.initialize()
-        with closing(self._connect()) as connection, connection:
+        with transaction(self.path) as connection:
             connection.executemany(
                 """
                 INSERT OR REPLACE INTO evaluation_cache (
@@ -999,21 +993,13 @@ class SQLiteStorage:
             if not self.path.exists():
                 return None
             return self._connect_read_only()
-        self.initialize()
         return self._connect()
 
     def _connect_read_only(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(
-            f"{self.path.resolve().as_uri()}?mode=ro", uri=True, timeout=5
-        )
-        connection.execute("PRAGMA busy_timeout = 5000")
-        return connection
+        return connect(self.path, read_only=True)
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=5)
-        connection.execute("PRAGMA busy_timeout = 5000")
-        connection.execute("PRAGMA foreign_keys = ON")
-        return connection
+        return connect(self.path)
 
 
 def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:

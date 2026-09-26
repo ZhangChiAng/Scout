@@ -6,8 +6,7 @@ import asyncio
 import json
 from collections.abc import Sequence
 from contextlib import nullcontext
-from dataclasses import replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import IO
 
@@ -18,19 +17,18 @@ from .datetime_utils import (
     beijing_date,
     publication_date_bound,
 )
-from .digest import issue_date_for, normalize_articles, parse_issue
-from .issue_delivery import process_issue
+from .digest import issue_date_for
+from .issue_delivery import prepare_issue, process_issue, save_issue
 from .issue_state import IssueState
 from .llm import (
     ModelConfig,
     PersonalizationLLM,
-    preference_request,
     resolve_api_key,
 )
 from .locking import sender_lock
 from .model import DigestArticle, NewsItem, PreferenceProfile, ProfileSnapshot, RunStats
 from .notifier import FeishuNotifier
-from .profile_flow import notify_profile, prepare_profile
+from .profile_flow import resolve_profile
 from .storage import SQLiteStorage
 
 
@@ -133,14 +131,11 @@ async def _run(
             model_config=model_config,
         )
 
-    dated_items = {}
-    if issue_date is not None:
-        # Reject an unavailable date before updating preferences or posting a
-        # profile notification. An explicit date never falls through to today.
-        for source in config.sources:
-            dated_items[source.name] = _select_dated_issue(
-                source, config, storage, issue_date, output
-            )
+    dated_item = (
+        _select_dated_issue(config.source, config, storage, issue_date, output)
+        if issue_date is not None
+        else None
+    )
 
     notifier = None
     if feishu_delivery is not None:
@@ -152,62 +147,23 @@ async def _run(
     if model_config is not None:
         llm = PersonalizationLLM(model_config, resolve_api_key(model_config))
         try:
-            cutoff_at = None
-            if mode == "profile-update":
-                cutoff_at = (
-                    started_at.replace(hour=19, minute=0, second=0, microsecond=0)
-                    .astimezone(UTC)
-                    .isoformat(timespec="milliseconds")
-                    .replace("+00:00", "Z")
-                )
-                print(
-                    f"Preference feedback cutoff: {cutoff_at}", file=output, flush=True
-                )
-            snapshot = storage.profile_snapshot(cutoff_at=cutoff_at)
-            if (
-                mode == "profile-update"
-                and snapshot.active is not None
-                and snapshot.active.notified
-                and preference_request(snapshot) is None
-            ):
-                print("No preference changes or pending notification.", file=output)
+            profile, snapshot = await resolve_profile(
+                storage,
+                llm,
+                notifier,
+                config,
+                mode=mode,
+                started_at=started_at,
+                output=output,
+            )
+            if profile is None:
                 await llm.close()
                 return 0
-            pending = snapshot.active is not None and not snapshot.active.notified
-            if pending and not read_only:
-                assert notifier is not None and snapshot.active is not None
-                notified = notify_profile(
-                    storage, notifier, snapshot.active, config, output
-                )
-                snapshot = replace(snapshot, active=notified)
-            if (
-                mode == "profile-rebuild"
-                and pending
-                and not snapshot.new_revision_count
-            ):
-                assert snapshot.active is not None
-                profile = snapshot.active
-                print(
-                    "Pending profile notification retried; no new model request.",
-                    file=output,
-                )
-            else:
-                profile = await prepare_profile(
-                    storage, llm, mode=mode, output=output, snapshot=snapshot
-                )
         except Exception:
             await llm.close()
             raise
 
     try:
-        if (
-            mode in {"send", "profile-rebuild", "profile-update"}
-            and profile.version > 0
-            and not profile.notified
-        ):
-            assert notifier is not None
-            profile = notify_profile(storage, notifier, profile, config, output)
-
         if mode in {"profile-update", "profile-rebuild", "profile-rebuild-preview"}:
             payload = profile.as_display_dict()
             if mode == "profile-rebuild-preview":
@@ -221,139 +177,21 @@ async def _run(
             )
             return 0
 
-        for source in config.sources:
-            if issue_date is not None:
-                item, saved_articles = dated_items[source.name]
-                await process_issue(
-                    source,
-                    item,
-                    mode=mode,
-                    storage=storage,
-                    notifier=notifier,
-                    llm=llm,
-                    profile=profile,
-                    feedback=snapshot.feedback,
-                    config=config,
-                    output=output,
-                    stats=stats,
-                    saved_articles=saved_articles,
-                    selected_date=issue_date,
-                )
-                continue
-            collection_succeeded = True
-            try:
-                batch = collect_source(source, config.network)
-            except Exception as exc:  # noqa: BLE001 - isolate source collection
-                collection_succeeded = False
-                stats.failed += 1
-                print(
-                    f"Collection failed: {source.name}: {type(exc).__name__}",
-                    file=output,
-                )
-                batch = CollectionBatch(())
-            if batch.issues:
-                stats.failed += len(batch.issues)
-                print(
-                    f"Collection warnings: {source.name}: {len(batch.issues)}",
-                    file=output,
-                )
-            saved = (
-                {
-                    item.dedupe_key: (day, item, articles)
-                    for day, item, articles in IssueState(storage).saved_issues(
-                        source.name
-                    )
-                }
-                if mode != "calibrate"
-                else {}
-            )
-            items = _unique_items(
-                (*batch.items, *(entry[1] for entry in saved.values())), stats
-            )
-            items.sort(key=issue_date_for, reverse=True)
-            if mode == "calibrate":
-                if not items:
-                    stats.failed += 1
-                    print(f"Calibration found no issue: {source.name}", file=output)
-                    continue
-                if not storage.is_source_initialized(source.name):
-                    storage.initialize_source_baseline(source.name, items)
-                # Calibration intentionally targets only the newest issue.
-                # Seal the older RSS window so the following personalized
-                # send cannot replay historical daily issues.  A later
-                # explicit calibration can still ignore this whole-issue
-                # state and send its own snapshot cards.
-                storage.record_delivered(items[1:])
-                await process_issue(
-                    source,
-                    items[0],
-                    mode=mode,
-                    storage=storage,
-                    notifier=notifier,
-                    llm=None,
-                    profile=profile,
-                    feedback=snapshot.feedback,
-                    config=config,
-                    output=output,
-                    stats=stats,
-                )
-                continue
-
-            initialized = storage.is_source_initialized(
-                source.name, read_only=read_only
-            )
-            if not initialized:
-                stats.baseline += len(items)
-                label = "Baseline preview" if read_only else "Baseline created"
-                print(f"{label}: {source.name}: {len(items)} issue(s)", file=output)
-                if read_only:
-                    for item in items:
-                        print(
-                            f"  - {item.published_at or '日期未知'} · {item.title}",
-                            file=output,
-                        )
-                elif collection_succeeded and not batch.issues:
-                    storage.initialize_source_baseline(source.name, items)
-                continue
-
-            try:
-                unseen = storage.unseen(items, read_only=read_only)
-            except Exception as exc:  # noqa: BLE001 - isolate source state
-                stats.failed += 1
-                print(
-                    f"State lookup failed: {source.name}: {type(exc).__name__}",
-                    file=output,
-                )
-                continue
-            stats.skipped += len(items) - len(unseen)
-            selected = sorted(unseen, key=issue_date_for)
-            if source.max_age_days is not None:
-                selected, stale = _partition_by_age(
-                    selected,
-                    run_date=run_date,
-                    max_age_days=source.max_age_days,
-                )
-                stats.skipped += len(stale)
-                if stale:
-                    print(
-                        f"Skipped {len(stale)} issue(s) older than "
-                        f"{source.max_age_days} days.",
-                        file=output,
-                    )
-            for item in selected:
-                await process_issue(
-                    source,
-                    item,
-                    mode=mode,
-                    storage=storage,
-                    notifier=notifier,
-                    llm=llm,
-                    profile=profile,
-                    feedback=snapshot.feedback,
-                    config=config,
-                    output=output,
-                    stats=stats,
-                )
+        await _process_source(
+            config,
+            storage,
+            mode=mode,
+            read_only=read_only,
+            run_date=run_date,
+            issue_date=issue_date,
+            dated_item=dated_item,
+            notifier=notifier,
+            llm=llm,
+            profile=profile,
+            snapshot=snapshot,
+            output=output,
+            stats=stats,
+        )
     finally:
         if llm is not None:
             await llm.close()
@@ -377,104 +215,77 @@ async def _run_scheduled(
     state = IssueState(storage)
     pending = []
     # Finish all durable collection before constructing or calling the model.
-    for source in config.sources:
-        saved = {
-            day: (item, articles)
-            for day, item, articles in state.saved_issues(source.name)
-        }
-        today = saved.get(run_date)
-        if today is not None:
-            print(
-                f"RSS skipped: {source.name}: complete snapshot for {run_date}; "
-                f"first_saved_at={state.first_saved_at(today[0].dedupe_key)}",
-                file=output,
-                flush=True,
-            )
-        else:
-            print(
-                f"RSS fetch started: {source.name}: {_now_beijing().isoformat()}",
-                file=output,
-                flush=True,
-            )
-            try:
-                batch = collect_source(source, config.network)
-            except Exception as exc:  # noqa: BLE001 - retain local retry path
-                stats.failed += 1
-                print(
-                    f"RSS fetch failed: {source.name}: {exc}; continuing saved issues.",
-                    file=output,
-                    flush=True,
-                )
-            else:
-                print(
-                    f"RSS fetch completed: {source.name}: {_now_beijing().isoformat()}; returned={len(batch.items)} warnings={len(batch.issues)}",
-                    file=output,
-                    flush=True,
-                )
-                stats.failed += len(batch.issues)
-                items = _unique_items(batch.items, stats)
-                valid_items = []
-                for item in items:
-                    try:
-                        day = issue_date_for(item)
-                        print(
-                            f"RSS issue: date={day} published_at={item.published_at} key={item.dedupe_key}",
-                            file=output,
-                            flush=True,
-                        )
-                        valid_items.append(item)
-                        fresh = [item]
-                        if source.max_age_days is not None:
-                            fresh, _ = _partition_by_age(
-                                fresh,
-                                run_date=run_date,
-                                max_age_days=source.max_age_days,
-                            )
-                        if not fresh:
-                            stats.skipped += 1
-                            continue
-                        if day in saved:
-                            continue
-                        issue = parse_issue(item.content, page_url=item.url)
-                        articles = normalize_articles(issue, digest_key=item.dedupe_key)
-                        if not articles:
-                            raise ValueError("issue overview contains no entries")
-                        storage.save_article_snapshots(articles)
-                        state.save_issue(item, day, articles)
-                        saved[day] = (item, articles)
-                        print(
-                            f"Complete issue saved: {day}: articles={len(articles)} first_saved_at={state.first_saved_at(item.dedupe_key)}",
-                            file=output,
-                            flush=True,
-                        )
-                    except Exception as exc:  # noqa: BLE001 - never mark a failed parse/save fetched
-                        stats.failed += 1
-                        print(
-                            f"Issue parse/save failed: {item.title}: {exc}",
-                            file=output,
-                            flush=True,
-                        )
-                if (
-                    not storage.is_source_initialized(source.name)
-                    and not batch.issues
-                    and valid_items
-                ):
-                    storage.initialize_source_baseline(source.name, valid_items)
-                    stats.baseline += len(valid_items)
+    source = config.source
+    saved = _saved_issues(storage, source)
+    today = saved.get(run_date)
+    if today is not None:
+        print(
+            f"RSS skipped: {source.name}: complete snapshot for {run_date}; "
+            f"first_saved_at={state.first_saved_at(today[0].dedupe_key)}",
+            file=output,
+            flush=True,
+        )
+    else:
+        print(
+            f"RSS fetch started: {source.name}: {_now_beijing().isoformat()}",
+            file=output,
+            flush=True,
+        )
+        batch, succeeded = _collect(source, config, stats, output)
+        if succeeded:
+            items = _unique_items(batch.items, stats)
+            valid_items = []
+            for item in items:
+                try:
+                    day = issue_date_for(item)
                     print(
-                        f"Baseline created: {source.name}: {len(valid_items)} issue(s)",
+                        f"RSS issue: date={day} published_at={item.published_at} key={item.dedupe_key}",
                         file=output,
+                        flush=True,
                     )
-        for day, (item, articles) in saved.items():
-            fresh = [item]
-            if source.max_age_days is not None:
-                fresh, _ = _partition_by_age(
-                    fresh, run_date=run_date, max_age_days=source.max_age_days
+                    valid_items.append(item)
+                    fresh, _ = _partition_by_age(
+                        [item], run_date=run_date, max_age_days=source.max_age_days
+                    )
+                    if not fresh:
+                        stats.skipped += 1
+                        continue
+                    if day in saved:
+                        continue
+                    _, articles = prepare_issue(item, selected_date=day)
+                    save_issue(storage, item, day, articles)
+                    saved[day] = (item, articles)
+                    print(
+                        f"Complete issue saved: {day}: articles={len(articles)} first_saved_at={state.first_saved_at(item.dedupe_key)}",
+                        file=output,
+                        flush=True,
+                    )
+                except Exception as exc:  # noqa: BLE001 - never mark a failed parse/save fetched
+                    stats.failed += 1
+                    print(
+                        f"Issue parse/save failed: {item.title}: {exc}",
+                        file=output,
+                        flush=True,
+                    )
+            if (
+                not storage.is_source_initialized(source.name)
+                and not batch.issues
+                and valid_items
+            ):
+                storage.initialize_source_baseline(source.name, valid_items)
+                stats.baseline += len(valid_items)
+                print(
+                    f"Baseline created: {source.name}: {len(valid_items)} issue(s)",
+                    file=output,
                 )
-            if not fresh or not storage.unseen([item]):
-                stats.skipped += 1
-                continue
-            pending.append((day, source, item, articles))
+    for day, (item, articles) in saved.items():
+        fresh, _ = _partition_by_age(
+            [item], run_date=run_date, max_age_days=source.max_age_days
+        )
+        if not fresh or not storage.unseen([item]):
+            stats.skipped += 1
+            continue
+        pending.append((day, source, item, articles))
     pending.sort(key=lambda entry: (entry[0], entry[1].name))
     if not pending:
         print(
@@ -579,8 +390,10 @@ def _unique_items(items: Sequence[NewsItem], stats: RunStats) -> list[NewsItem]:
 
 
 def _partition_by_age(
-    items: Sequence[NewsItem], *, run_date: str, max_age_days: int
+    items: Sequence[NewsItem], *, run_date: str, max_age_days: int | None
 ) -> tuple[list[NewsItem], list[NewsItem]]:
+    if max_age_days is None:
+        return list(items), []
     cutoff = date.fromisoformat(run_date) - timedelta(days=max_age_days)
     fresh: list[NewsItem] = []
     stale: list[NewsItem] = []
@@ -597,3 +410,160 @@ def _print_summary(stats: RunStats, output: IO[str]) -> None:
         f"skipped={stats.skipped} previewed={stats.previewed}",
         file=output,
     )
+
+
+def _collect(source, config, stats, output):
+    try:
+        batch = collect_source(source, config.network)
+    except Exception as exc:  # noqa: BLE001 - permit recovery from saved issues
+        stats.failed += 1
+        print(
+            f"Collection failed: {source.name}: {type(exc).__name__}; continuing saved issues.",
+            file=output,
+            flush=True,
+        )
+        return CollectionBatch(()), False
+    stats.failed += len(batch.issues)
+    print(
+        f"Collection completed: {source.name}: returned={len(batch.items)} warnings={len(batch.issues)}",
+        file=output,
+        flush=True,
+    )
+    return batch, True
+
+
+def _saved_issues(storage, source):
+    return {
+        day: (item, articles)
+        for day, item, articles in IssueState(storage).saved_issues(source.name)
+    }
+
+
+async def _process_source(
+    config,
+    storage,
+    *,
+    mode,
+    read_only,
+    run_date,
+    issue_date,
+    dated_item,
+    notifier,
+    llm,
+    profile,
+    snapshot,
+    output,
+    stats,
+):
+    source = config.source
+    if issue_date is not None:
+        item, saved_articles = dated_item
+        await process_issue(
+            source,
+            item,
+            mode=mode,
+            storage=storage,
+            notifier=notifier,
+            llm=llm,
+            profile=profile,
+            feedback=snapshot.feedback,
+            config=config,
+            output=output,
+            stats=stats,
+            saved_articles=saved_articles,
+            selected_date=issue_date,
+        )
+        return
+    batch, collection_succeeded = _collect(source, config, stats, output)
+    saved = (
+        {
+            item.dedupe_key: (day, item, articles)
+            for day, (item, articles) in _saved_issues(storage, source).items()
+        }
+        if mode != "calibrate"
+        else {}
+    )
+    items = _unique_items(
+        (*batch.items, *(entry[1] for entry in saved.values())), stats
+    )
+    items.sort(key=issue_date_for, reverse=True)
+    if mode == "calibrate":
+        if not items:
+            stats.failed += 1
+            print(f"Calibration found no issue: {source.name}", file=output)
+            return
+        if not storage.is_source_initialized(source.name):
+            storage.initialize_source_baseline(source.name, items)
+        # Calibration intentionally targets only the newest issue.
+        # Seal the older RSS window so the following personalized
+        # send cannot replay historical daily issues.  A later
+        # explicit calibration can still ignore this whole-issue
+        # state and send its own snapshot cards.
+        storage.record_delivered(items[1:])
+        await process_issue(
+            source,
+            items[0],
+            mode=mode,
+            storage=storage,
+            notifier=notifier,
+            llm=None,
+            profile=profile,
+            feedback=snapshot.feedback,
+            config=config,
+            output=output,
+            stats=stats,
+        )
+        return
+
+    initialized = storage.is_source_initialized(source.name, read_only=read_only)
+    if not initialized:
+        stats.baseline += len(items)
+        label = "Baseline preview" if read_only else "Baseline created"
+        print(f"{label}: {source.name}: {len(items)} issue(s)", file=output)
+        if read_only:
+            for item in items:
+                print(
+                    f"  - {item.published_at or '日期未知'} · {item.title}",
+                    file=output,
+                )
+        elif collection_succeeded and not batch.issues:
+            storage.initialize_source_baseline(source.name, items)
+        return
+
+    try:
+        unseen = storage.unseen(items, read_only=read_only)
+    except Exception as exc:  # noqa: BLE001 - isolate source state
+        stats.failed += 1
+        print(
+            f"State lookup failed: {source.name}: {type(exc).__name__}",
+            file=output,
+        )
+        return
+    stats.skipped += len(items) - len(unseen)
+    selected = sorted(unseen, key=issue_date_for)
+    if source.max_age_days is not None:
+        selected, stale = _partition_by_age(
+            selected,
+            run_date=run_date,
+            max_age_days=source.max_age_days,
+        )
+        stats.skipped += len(stale)
+        if stale:
+            print(
+                f"Skipped {len(stale)} issue(s) older than {source.max_age_days} days.",
+                file=output,
+            )
+    for item in selected:
+        await process_issue(
+            source,
+            item,
+            mode=mode,
+            storage=storage,
+            notifier=notifier,
+            llm=llm,
+            profile=profile,
+            feedback=snapshot.feedback,
+            config=config,
+            output=output,
+            stats=stats,
+        )
