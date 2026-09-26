@@ -6,9 +6,9 @@ from dataclasses import replace
 from datetime import UTC
 from typing import IO
 
+from .codex_runtime import ModelUnavailableError
 from .config import AppConfig
 from .llm import (
-    MODEL_REASONING_EFFORT,
     LLMError,
     PersonalizationLLM,
     preference_request,
@@ -66,13 +66,15 @@ async def prepare_profile(
         f"new_revision_count={snapshot.new_revision_count} "
         f"revisions_since_rebuild={snapshot.revisions_since_rebuild} "
         f"cutoff_revision_id={snapshot.cutoff_revision_id} "
-        f"reasoning_effort={MODEL_REASONING_EFFORT} "
+        f"model={llm.config.model} reasoning_effort={llm.config.reasoning_effort} "
         f"input_chars={request.input_chars} (characters, not tokens).",
         file=output,
         flush=True,
     )
     try:
         generated = await llm.summarize_preferences(request)
+    except ModelUnavailableError:
+        raise
     except Exception as exc:
         raise LLMError(
             f"preference update failed; feedback progress unchanged: {exc}"

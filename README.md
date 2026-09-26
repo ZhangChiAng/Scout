@@ -12,7 +12,9 @@ HTTP 采集正文，按配置筛选，自动发送标题和原文链接。权威
 
 ## 准备
 
-需要 [uv](https://docs.astral.sh/uv/) 和 CPython 3.14：
+需要 [uv](https://docs.astral.sh/uv/)、CPython 3.14，以及可使用 Codex 和 GPT-6 Sol
+的 ChatGPT 订阅。官方 `openai-codex` Python SDK 随包安装固定版本的 Codex
+运行时，不需要单独安装 Codex CLI 或 Node：
 
 ```bash
 uv python install 3.14
@@ -23,17 +25,58 @@ cp models.example.toml models.toml
 
 编辑 `.env`：
 
-- `SCOUT_LLM_API_KEY`：个性化发送、只读评价、偏好更新及重整命令必需；
 - `FEISHU_APP_ID`、`FEISHU_APP_SECRET`：listener、发送与校准必需；
 - `FEISHU_RECEIVE_ID_TYPE=chat_id`、`FEISHU_RECEIVE_ID`：发送、listener 与校准的群目标；
-- `SCOUT_DB_PATH`：可选，默认 `data/scout.sqlite3`。
+- `SCOUT_DB_PATH`：可选，默认 `data/scout.sqlite3`；
+- `SCOUT_CODEX_HOME`：可选，默认 `~/.local/share/scout/codex`，保存 Scout 专用认证及运行状态。
 
-编辑 `models.toml`，在 `[model]` 下只设置 `model` 和 `base_url`。模型端点支持 OpenAI Responses 契约。协议固定
-为 `openai_responses`，环境变量名固定为 `SCOUT_LLM_API_KEY`。端点必须支持
-`text.format` JSON Schema、`store=false`、`output_text`、`status` 与
-`incomplete_details`；Scout 不降级成自由文本解析。
-偏好归纳和评价均设置 `reasoning.effort=max`，保持 `max_output_tokens=65536`、
-600 秒超时，关闭 SDK 自动重试。
+`models.toml` 默认使用 GPT-6 Sol、medium 推理档位和 Fast 速度：
+
+```toml
+[model]
+model = "gpt-6-sol"
+reasoning_effort = "medium"
+```
+
+`model` 必填，`reasoning_effort` 省略时为 `medium`。旧配置中的 `base_url`
+必须删除，`.env` 不再需要 `SCOUT_LLM_API_KEY`。模型不可用或认证失败会明确报错，
+不会自动切换模型或回退到 API Key。
+
+首次使用前登录 ChatGPT：
+
+```bash
+# 默认设备码登录：按终端显示的地址和验证码操作，最多等待 15 分钟
+uv run --locked python -m scout.auth login
+
+# 也可使用浏览器登录；设备码登录未启用时可选此方式
+uv run --locked python -m scout.auth login --browser
+
+# 查看订阅档位、SDK/运行时版本和状态目录；--refresh 请求刷新凭据
+uv run --locked python -m scout.auth status
+uv run --locked python -m scout.auth status --refresh
+
+# 只注销 Scout 专用目录中的登录
+uv run --locked python -m scout.auth logout
+```
+
+认证命令不要求飞书或数据库配置。SDK 管理登录、凭据保存和令牌刷新，不复用日常
+`~/.codex` 状态。`SCOUT_CODEX_HOME` 必须是没有 `config.toml` 的专用目录，模型
+只在 Scout 的 `models.toml` 中配置；继承的 MCP 或自定义 OpenAI 端点配置会报错。
+凭据目录仅当前用户可访问；同一目录的认证操作和模型进程使用
+独占锁，正在运行时再次使用会报忙。定时任务遇到未登录状态时提示人工登录，
+不会自行启动浏览器。
+
+Scout 按官方 [Codex SDK](https://learn.chatgpt.com/docs/codex-sdk) 和
+[可信私有自动化认证](https://learn.chatgpt.com/docs/auth/ci-cd-auth) 文档接入，
+用作单一所有者的个人工具。订阅仍受账户可用模型、额度及使用条款约束，不等于
+通用 API 额度，也不代表对任意用途的合规保证。
+
+偏好归纳和评价各自创建独立临时线程，使用 JSON Schema 结构化输出并继续验证业务
+字段。运行时采用独立空工作目录、只读沙箱和禁止批准模式，不给线程分配执行环境、
+动态工具或能力目录，关闭 shell、联网搜索、浏览器、插件、应用及子代理等能力，
+不加载项目指令和记忆；非预期工具调用判为失败。
+每次请求总截止时间为 600 秒，超时后中断并关闭运行时。Scout 不自动重试模型请求；
+官方运行时仍可刷新认证并执行内部恢复。SDK 未公开输出 token 上限参数。
 
 `config.toml` 使用单个 `[source]` 配置橘鸦 RSS、网络限制和飞书卡片最大字节数。来源名是 SQLite
 持久化身份，建立基线后不要修改。
@@ -79,13 +122,15 @@ uv run --locked python -m scout --send
 ```
 
 发送前会生成并激活偏好档案 v1，先发送一张档案变化卡，再评价新条目。偏好更新
-失败时本轮不会沿用旧档案；每批最多评价 8 条，失败后的批次可继续评价并缓存，
+失败时本轮不会沿用旧档案；每批最多评价 8 条，普通失败后的批次可继续评价并缓存，
 正文发送在首个缺项处暂停，以保持原顺序。补齐评价和正文后才发末尾列表。
+认证失效、限流或额度耗尽时停止本轮剩余模型请求，保留已完成缓存，等待重新登录
+或后续调度。
 
 ## 日常命令
 
 ```bash
-# 真实拉 RSS 和调用模型，但 SQLite 完全零写入，也不联系飞书
+# 真实拉 RSS 和调用模型，Scout 业务 SQLite 零写入，也不联系飞书
 uv run --locked python -m scout --dry-run
 
 # 人工更新档案，按日期从早到晚补齐有效期内未推送的日报
@@ -105,7 +150,7 @@ uv run --locked python -m scout --dry-run --issue-date 2026-09-02
 uv run --locked python -m scout --profile-show
 uv run --locked python -m scout --profile-history
 
-# 真实模型全量重整预览：显示完整结果及输入字符数，SQLite 零写入，不发送消息
+# 真实模型全量重整预览：显示完整结果及输入字符数，业务 SQLite 零写入，不发送消息
 uv run --locked python -m scout --profile-rebuild-preview
 
 # 全量重整、启用新版本并通知飞书群；只处理偏好，不进入新闻推送流程
@@ -124,6 +169,9 @@ RSS；该日期已退出 RSS 或 RSS 暂时不可达时，使用 SQLite 中已�
 已生成版本，没有新反馈时不会再次调用模型生成。已通知版本再次手动重整仍会强制
 生成新版本。
 
+两个预览命令的只读保证针对 Scout 业务 SQLite 和飞书消息；官方 SDK 仍可能
+更新专用目录中的认证、缓存和运行状态，并使用独立的 Codex 进程锁。
+
 ## 偏好增量归纳与全量重整
 
 格式 v2 分为“判断规则、具体对象、专题兴趣、重要疑问”。规则表达跨新闻适用的
@@ -131,10 +179,22 @@ RSS；该日期已退出 RSS 或 RSS 暂时不可达时，使用 SQLite 中已�
 充分表达的明确兴趣；疑问只保留确实影响推荐且现有反馈不能解决的歧义。
 判断规则争取不超过 10 条、重要疑问争取不超过 3 条，不机械截断。
 
+归纳在同一次模型请求中先确定有效含义，再合并重复表达，最后核对事实、范围、
+否定、期限和例外。合并必须保留判断所需的具体背景，不能把已知工作领域或兴趣
+边界缩成“与自己相关”等泛泛条件，也不能为不同理由杜撰共同解释。同类对象按
+相同关系、范围和期限合并列出，保留全部名称及依据；不同关系或例外分别描述，
+新增反馈只改变相关对象。对象主要记录关系，通用判断只表达一次。
+明确的必要条件保留原有强度，不弱化成优先倾向；关注理由的主次比较不自动确认
+或否定对象关系，关系须有明确依据。
+疑问须对应无法确定的具体推荐判断，尚未收集完整使用产品名单不构成疑问。
+
 日常更新输入当前精简偏好及上次成功更新后新增的有效反馈（倾向、原因和原新闻
 标题、摘要、详情，首期保留完整上下文）。模型输出完整新偏好，可合并、改写和
 删除；重复反馈只用于印证，不自动增加规则，不复述案例或从单篇评价推断整个领域
 的喜恶。明确表达的对象、关系和兴趣应保留，不为每个兴趣推演未知边界。
+单纯印证已有含义的反馈主要补充依据；合并或拆分旧条目时检查仍有效的信息是否
+保留。较新的明确偏好更改替代同一范围内的旧判断，全量重整也不恢复已更改的
+旧偏好；单篇倾向不同不自动推翻其他范围的偏好。
 即使内容保持不变，也保存版本、更新说明及已消费进度。
 
 首次达到两条喜欢、两条不喜欢时全量归纳；旧格式切换、自上次全量后累计 20 条
@@ -180,6 +240,8 @@ sender 和 listener 各有独立进程锁。SQLite 使用短事务及 5 秒 busy
 
 仓库位于默认的 `%h/workspace/scout` 时，可以直接安装；如果路径不同，先
 修改 service unit 的 `WorkingDirectory`、`EnvironmentFile` 和 `ExecStart`。
+先以运行服务的同一用户完成 ChatGPT 登录；如自定义 `SCOUT_CODEX_HOME`，人工命令
+和 systemd 服务须使用同一路径。SDK 按任务启动、关闭，无须新增常驻模型服务。
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -194,7 +256,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now scout-feedback.service
 journalctl --user -u scout-feedback.service -f
 
-# 校准和一次人工 --send 验收通过后再启用 timer
+# ChatGPT 登录、目标模型、校准和一次人工 --send 验收通过后再启用 timer
 systemctl --user enable --now scout-send.timer scout-profile-update.timer
 systemctl --user list-timers scout-send.timer scout-profile-update.timer
 ```
@@ -211,7 +273,8 @@ systemctl --user list-timers scout-send.timer scout-profile-update.timer
 发送失败从 SQLite 重试未完成部分，较早一期未完成时暂停后续日期；全已完成时
 跳过模型与飞书阶段。12:30 后才发布的内容次日补抓。
 
-运行日志包括 RSS 请求起止、发布时间、返回期次、首次新闻快照保存时间、跳过
+运行日志包括实际模型、推理档位、请求耗时、可用的 token 用量和错误类别，不记录凭据。
+同时记录 RSS 请求起止、发布时间、返回期次、首次新闻快照保存时间、跳过
 抓取原因，以及偏好、评价缓存、正文、列表和整期完成状态。`first_saved_at` 来自
 该日报最早条目快照的保存时间，不代表每次网络抓取时间。
 
@@ -229,7 +292,7 @@ uv run --locked python -m scout --profile-show
 
 ## 工程检查与已知边界
 
-项目不编写单元测试；需要验收时只使用真实 RSS、当前模型端点、真实 SQLite 和
+项目不编写单元测试；需要验收时只使用真实 RSS、官方 SDK 的真实模型调用、真实 SQLite 和
 真实飞书群做端到端验收。不涉及飞书端到端验收的改动不新增测试门禁。可执行的
 本地静态检查只有：
 
@@ -239,6 +302,12 @@ uv run --locked ruff format --check .
 uv run --locked python -m compileall -q scout
 git diff --check
 ```
+
+模型接入迁移须验证真实登录、状态查询、刷新、进程重启后的认证复用，以及
+GPT-6 Sol 的 medium 推理和 Fast 速度。使用真实未缓存新闻执行预览，再在真实群
+完成投递和反馈后的画像更新；不清空成功缓存或重放已完成日报来制造验收数据。
+目标模型或结构化输出不可用时停止切换定时任务。认证失败可用临时独立状态目录
+检查，不注销正式凭据；限流等未自然出现的场景如实记录为未验证，不故意耗尽额度。
 
 列表及按需正文在发送前持久化 UUID，并使用 SQLite 唯一约束。飞书对相同 UUID
 提供 [1 小时发送去重](https://open.feishu.cn/document/server-docs/im-v1/message/create)，

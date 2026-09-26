@@ -6,6 +6,7 @@ import json
 from collections.abc import Sequence
 from typing import IO
 
+from .codex_runtime import ModelUnavailableError
 from .config import AppConfig, SourceConfig
 from .digest import issue_date_for, normalize_articles, parse_issue
 from .issue_state import FilteredList, IssueState, ListMember
@@ -144,6 +145,9 @@ async def process_issue(
                     file=output,
                     flush=True,
                 )
+        except ModelUnavailableError:
+            stats.failed += len(batch)
+            raise
         except Exception as exc:  # noqa: BLE001 - isolate one model batch
             stats.failed += len(batch)
             print(

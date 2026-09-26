@@ -1,3 +1,4 @@
 [model]
-model = "example-responses-model"
-base_url = "https://api.example.com/v1"
+model = "gpt-6-sol"
+# Optional; GPT-6 Sol's default reasoning effort is medium.
+reasoning_effort = "medium"

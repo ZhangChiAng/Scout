@@ -10,6 +10,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import IO
 
+from .codex_runtime import ModelUnavailableError
 from .collector import CollectionBatch, collect_source
 from .config import AppConfig, FeishuDeliveryConfig, SourceConfig
 from .datetime_utils import (
@@ -20,11 +21,7 @@ from .datetime_utils import (
 from .digest import issue_date_for
 from .issue_delivery import prepare_issue, process_issue, save_issue
 from .issue_state import IssueState
-from .llm import (
-    ModelConfig,
-    PersonalizationLLM,
-    resolve_api_key,
-)
+from .llm import ModelConfig, PersonalizationLLM
 from .locking import sender_lock
 from .model import DigestArticle, NewsItem, PreferenceProfile, ProfileSnapshot, RunStats
 from .notifier import FeishuNotifier
@@ -141,12 +138,11 @@ async def _run(
     if feishu_delivery is not None:
         notifier = FeishuNotifier(feishu_delivery, config.network.timeout_seconds)
 
-    llm = None
+    llm = PersonalizationLLM(model_config) if model_config is not None else None
     profile = PreferenceProfile.empty()
     snapshot = ProfileSnapshot()
-    if model_config is not None:
-        llm = PersonalizationLLM(model_config, resolve_api_key(model_config))
-        try:
+    try:
+        if llm is not None:
             profile, snapshot = await resolve_profile(
                 storage,
                 llm,
@@ -157,13 +153,8 @@ async def _run(
                 output=output,
             )
             if profile is None:
-                await llm.close()
                 return 0
-        except Exception:
-            await llm.close()
-            raise
 
-    try:
         if mode in {"profile-update", "profile-rebuild", "profile-rebuild-preview"}:
             payload = profile.as_display_dict()
             if mode == "profile-rebuild-preview":
@@ -192,6 +183,9 @@ async def _run(
             output=output,
             stats=stats,
         )
+    except ModelUnavailableError:
+        _print_summary(stats, output)
+        raise
     finally:
         if llm is not None:
             await llm.close()
@@ -311,7 +305,7 @@ async def _run_scheduled(
         file=output,
         flush=True,
     )
-    llm = PersonalizationLLM(model_config, resolve_api_key(model_config))
+    llm = PersonalizationLLM(model_config)
     try:
         notifier = FeishuNotifier(feishu_delivery, config.network.timeout_seconds)
         for day, source, item, articles in pending:
@@ -338,6 +332,9 @@ async def _run_scheduled(
                     flush=True,
                 )
                 break
+    except ModelUnavailableError:
+        _print_summary(stats, output)
+        raise
     finally:
         await llm.close()
     _print_summary(stats, output)
