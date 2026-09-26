@@ -1,5 +1,6 @@
 """Durable, ordered Zhihu title/link delivery. Network calls hold no transaction."""
 
+import json
 import time
 import uuid
 from contextlib import closing
@@ -59,6 +60,8 @@ def register(database, state):
     """Reconcile saved bodies after crashes, preserving discovery order and quota."""
     if not state.get("auto_notify"):
         return 0
+    if state.get("schema_version") == 2:
+        return _register_topic(database, state)
     rules = Rules.load(state["config"]["rules"])
     with transaction(database) as conn:
         count = conn.execute(
@@ -109,6 +112,70 @@ def register(database, state):
     return count
 
 
+def _register_topic(database, state):
+    from .config import load_config
+    from .zhihu_cards import build_content_card
+    from .zhihu_store import latest_feedback
+
+    if state["status"] not in {"completed", "partial_failed"}:
+        return 0
+    records = {a["article_key"]: a for a in state["records"]}
+    limit = state["config"]["scan"]["max_results"]
+    max_payload_bytes = load_config().feishu.max_payload_bytes
+    with transaction(database) as conn:
+        count = conn.execute(
+            "SELECT count(*) FROM zhihu_link_deliveries WHERE scan_id=? AND message_type!='interactive_review'",
+            (state["id"],),
+        ).fetchone()[0]
+        legacy = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='rule_test_deliveries'"
+        ).fetchone()
+        for key in state["selected_keys"]:
+            if count >= limit:
+                break
+            if conn.execute(
+                "SELECT 1 FROM zhihu_link_deliveries WHERE article_key=?", (key,)
+            ).fetchone():
+                continue
+            if (
+                legacy
+                and conn.execute(
+                    "SELECT 1 FROM rule_test_deliveries WHERE article_key=? AND status='delivered'",
+                    (key,),
+                ).fetchone()
+            ):
+                continue
+            article = records[key]
+            validate_evidence(Path(state["directory"]), article)
+            card_json = json.dumps(
+                build_content_card(
+                    article,
+                    snapshot_id=article["snapshot_id"],
+                    max_payload_bytes=max_payload_bytes,
+                    feedback=latest_feedback(database, key),
+                    learning=state["learning"],
+                ),
+                ensure_ascii=False,
+            )
+            conn.execute(
+                """INSERT INTO zhihu_link_deliveries
+                (article_key,scan_id,title,url,chat_id,send_uuid,message_type,card_json,snapshot_id)
+                VALUES (?,?,?,?,?,?,'interactive',?,?)""",
+                (
+                    key,
+                    state["id"],
+                    article["title"],
+                    article["url"],
+                    state["chat_id"],
+                    str(uuid.uuid5(uuid.UUID(state["id"]), "deliver:" + key)),
+                    card_json,
+                    article["snapshot_id"],
+                ),
+            )
+            count += 1
+    return count
+
+
 def delivery_summary(database, scan_id):
     with closing(connect(database, read_only=True)) as conn:
         if not conn.execute(
@@ -153,6 +220,7 @@ def _recover(database):
                 AND older.position<d.position AND older.status!='delivered')
             ORDER BY position""").fetchall()
     for row in rows:
+        row = dict(row)
         if row["retry_at"] > time.time():
             continue
         if row["attempts"] >= 3:
@@ -172,12 +240,19 @@ def _recover(database):
             )
         try:
             notifier = FeishuNotifier(resolve_feishu_delivery(), 15)
-            sent = notifier.send_link(
-                row["title"],
-                row["url"],
-                chat_id=row["chat_id"],
-                send_uuid=row["send_uuid"],
-            )
+            if row.get("message_type") in {"interactive", "interactive_review"}:
+                sent = notifier.send_card(
+                    json.loads(row["card_json"]),
+                    chat_id=row["chat_id"],
+                    send_uuid=row["send_uuid"],
+                )
+            else:
+                sent = notifier.send_link(
+                    row["title"],
+                    row["url"],
+                    chat_id=row["chat_id"],
+                    send_uuid=row["send_uuid"],
+                )
             if sent.chat_id != row["chat_id"]:
                 raise NotificationError("返回群与固定目标群不符")
         except (NotificationError, ConfigError) as exc:

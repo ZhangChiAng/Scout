@@ -1,0 +1,407 @@
+{
+  "verified_at": "2026-09-26T12:44:59.129210+00:00",
+  "source": "真实飞书人工反馈、完整正文快照和生产SQLite只读数据；没有生成反馈或触发训练/投递。",
+  "counts": {
+    "feedback_revisions": 3,
+    "effective_labels": 3,
+    "likes": 1,
+    "dislikes": 2,
+    "model_versions": 3
+  },
+  "feedback_checks": [
+    {
+      "revision_id": 1,
+      "content_key": "zhihu:answer:2087258851024319195",
+      "snapshot_id": 542,
+      "label": "like",
+      "keywords": [],
+      "created_at": "2026-09-26T12:41:38.682996+00:00",
+      "event_id": "4de7b5ff991b4ffd06aa6a1c6e721f7d",
+      "message_id": "om_x100b644f9af01ca4b16de7c9772e236",
+      "snapshot_body_sha256": "b844d30a990d3ac6d65aac1e59da34491067219a070b398880c93e41c2592540",
+      "snapshot_content_sha256": "f43a8a729dfa5d7754c0d22f684a860dae0e21112ac34e5e06694f29d4598b25",
+      "snapshot_content_hash_matches": true,
+      "snapshot_body_characters": 461,
+      "snapshot_body_matches_article": true,
+      "snapshot_is_complete_body": true,
+      "snapshot_identity_matches": true,
+      "feedback_from_delivered_matching_snapshot": true,
+      "source_send_uuid": "5e0b57ca-4214-52d0-bbda-3e7648bfe42a",
+      "keywords_normalized_unique": true,
+      "keyword_literal_matches": [],
+      "like_requires_no_keywords": true
+    },
+    {
+      "revision_id": 2,
+      "content_key": "zhihu:answer:2087160566863356317",
+      "snapshot_id": 84,
+      "label": "dislike",
+      "keywords": [
+        "流口水"
+      ],
+      "created_at": "2026-09-26T12:42:22.342777+00:00",
+      "event_id": "43ea28d3504638ffcc56d182e5d3e7e0",
+      "message_id": "om_x100b644f98dd54b8b4b085ef5e26814",
+      "snapshot_body_sha256": "2b3ccdbc514a8778ec06386d8fcb13c64e7b24043126e2afa4239ca89f195902",
+      "snapshot_content_sha256": "9217eac7bef2994098fc4bb6dd6f6fe52ac4550afc1f80a9979eea18ad9651e1",
+      "snapshot_content_hash_matches": true,
+      "snapshot_body_characters": 58,
+      "snapshot_body_matches_article": true,
+      "snapshot_is_complete_body": true,
+      "snapshot_identity_matches": true,
+      "feedback_from_delivered_matching_snapshot": true,
+      "source_send_uuid": "d20da2c6-a82e-5f89-b168-562cd9a36813",
+      "keywords_normalized_unique": true,
+      "keyword_literal_matches": [
+        {
+          "keyword": "流口水",
+          "casefold_literal_match": true,
+          "occurrences": 1
+        }
+      ],
+      "like_requires_no_keywords": true
+    },
+    {
+      "revision_id": 3,
+      "content_key": "zhihu:answer:2087158102332272776",
+      "snapshot_id": 80,
+      "label": "dislike",
+      "keywords": [
+        "o÷"
+      ],
+      "created_at": "2026-09-26T12:43:07.756315+00:00",
+      "event_id": "d9d0f53dc1c4bfe2b83037ccc0cef7c1",
+      "message_id": "om_x100b644f98bd94a4b48af252a2b4134",
+      "snapshot_body_sha256": "ba2be48636018e85d92eac07b9a4dbca838f14e1f9db1ea03275e819a0945e0a",
+      "snapshot_content_sha256": "b620f8170c44b50053ca54bbe06a32f47bc730f2d845ca6dd63fa32d8694ff09",
+      "snapshot_content_hash_matches": true,
+      "snapshot_body_characters": 161,
+      "snapshot_body_matches_article": true,
+      "snapshot_is_complete_body": true,
+      "snapshot_identity_matches": true,
+      "feedback_from_delivered_matching_snapshot": true,
+      "source_send_uuid": "b66f8d52-9603-5b7a-96c4-a8eaf9f0e119",
+      "keywords_normalized_unique": true,
+      "keyword_literal_matches": [
+        {
+          "keyword": "o÷",
+          "casefold_literal_match": true,
+          "occurrences": 2
+        }
+      ],
+      "like_requires_no_keywords": true
+    }
+  ],
+  "effective_revision_ids": [
+    1,
+    2,
+    3
+  ],
+  "feedback_modifications": [],
+  "model_checks": [
+    {
+      "version": 1,
+      "cutoff_revision_id": 1,
+      "created_at": "2026-09-26T12:41:43.144117+00:00",
+      "status": "calibrating",
+      "error": "",
+      "model": {
+        "fit": {
+          "reason": "collecting_both_labels"
+        },
+        "l2": 0.1,
+        "progress": {
+          "dislikes": 0,
+          "likes": 1
+        },
+        "ready": false,
+        "threshold": 0.0,
+        "weights": {}
+      },
+      "effective_revision_ids": [
+        1
+      ],
+      "effective_counts": {
+        "likes": 1,
+        "dislikes": 0
+      },
+      "progress_matches_effective_labels": true,
+      "both_labels_required": true,
+      "l2_is_default_0_1": true,
+      "all_weights_nonpositive": true,
+      "threshold_nonpositive": true,
+      "score_zero_passes": true,
+      "samples_recomputed_from_saved_full_body": [
+        {
+          "content_key": "zhihu:answer:2087258851024319195",
+          "revision_id": 1,
+          "label": "like",
+          "binary_features": {},
+          "score": 0.0,
+          "retained": true,
+          "training_weight": null
+        }
+      ]
+    },
+    {
+      "version": 2,
+      "cutoff_revision_id": 2,
+      "created_at": "2026-09-26T12:42:23.191161+00:00",
+      "status": "ready",
+      "error": "",
+      "model": {
+        "fit": {
+          "balanced_accuracy": 1.0,
+          "conflict_count": 0,
+          "conflicts": [],
+          "converged": true,
+          "false_dislike": 0,
+          "false_like": 0,
+          "feature_count": 1,
+          "iterations": 80,
+          "objective": 0.49901969372020366,
+          "projected_gradient": 3.6369743439124136e-08,
+          "sample_count": 2,
+          "samples": [
+            {
+              "content_key": "zhihu:answer:2087160566863356317",
+              "label": "dislike",
+              "retained": false,
+              "revision_id": 2,
+              "score": -1.5675394351297756
+            },
+            {
+              "content_key": "zhihu:answer:2087258851024319195",
+              "label": "like",
+              "retained": true,
+              "revision_id": 1,
+              "score": 0.0
+            }
+          ],
+          "true_dislike": 1,
+          "true_like": 1
+        },
+        "l2": 0.1,
+        "progress": {
+          "dislikes": 1,
+          "likes": 1
+        },
+        "ready": true,
+        "threshold": 0.0,
+        "training_intercept": 0.7837695544467023,
+        "weights": {
+          "流口水": -1.5675394351297756
+        }
+      },
+      "effective_revision_ids": [
+        1,
+        2
+      ],
+      "effective_counts": {
+        "likes": 1,
+        "dislikes": 1
+      },
+      "progress_matches_effective_labels": true,
+      "both_labels_required": true,
+      "l2_is_default_0_1": true,
+      "all_weights_nonpositive": true,
+      "threshold_nonpositive": true,
+      "score_zero_passes": true,
+      "samples_recomputed_from_saved_full_body": [
+        {
+          "content_key": "zhihu:answer:2087258851024319195",
+          "revision_id": 1,
+          "label": "like",
+          "binary_features": {
+            "流口水": 0
+          },
+          "score": 0.0,
+          "retained": true,
+          "training_weight": 0.5
+        },
+        {
+          "content_key": "zhihu:answer:2087160566863356317",
+          "revision_id": 2,
+          "label": "dislike",
+          "binary_features": {
+            "流口水": 1
+          },
+          "score": -1.5675394351297756,
+          "retained": false,
+          "training_weight": 0.5
+        }
+      ],
+      "vocabulary_matches_current_negative_feedback": true,
+      "balanced_class_total_weight": {
+        "like": 0.5,
+        "dislike": 0.5
+      },
+      "sample_scores_match_saved_fit": true,
+      "confusion_counts_match_saved_fit": true,
+      "recomputed_balanced_accuracy": 1.0,
+      "balanced_accuracy_matches_saved_fit": true,
+      "threshold_maximizes_balanced_accuracy_with_false_positive_tiebreak": true,
+      "recomputed_regularized_objective": 0.49901969372020366,
+      "objective_matches_saved_fit": true,
+      "recomputed_projected_gradient": 3.6369743439124136e-08,
+      "gradient_residual_matches_saved_fit": true,
+      "converged_at_1e_7": true
+    },
+    {
+      "version": 3,
+      "cutoff_revision_id": 3,
+      "created_at": "2026-09-26T12:43:08.236095+00:00",
+      "status": "ready",
+      "error": "",
+      "model": {
+        "fit": {
+          "balanced_accuracy": 1.0,
+          "conflict_count": 0,
+          "conflicts": [],
+          "converged": true,
+          "false_dislike": 0,
+          "false_like": 0,
+          "feature_count": 2,
+          "iterations": 70,
+          "objective": 0.5738334001801748,
+          "projected_gradient": 5.981351680617308e-08,
+          "sample_count": 3,
+          "samples": [
+            {
+              "content_key": "zhihu:answer:2087158102332272776",
+              "label": "dislike",
+              "retained": false,
+              "revision_id": 3,
+              "score": -0.9566257518157718
+            },
+            {
+              "content_key": "zhihu:answer:2087160566863356317",
+              "label": "dislike",
+              "retained": false,
+              "revision_id": 2,
+              "score": -0.9566257518157718
+            },
+            {
+              "content_key": "zhihu:answer:2087258851024319195",
+              "label": "like",
+              "retained": true,
+              "revision_id": 1,
+              "score": 0.0
+            }
+          ],
+          "true_dislike": 2,
+          "true_like": 1
+        },
+        "l2": 0.1,
+        "progress": {
+          "dislikes": 2,
+          "likes": 1
+        },
+        "ready": true,
+        "threshold": 0.0,
+        "training_intercept": 0.4783126468919604,
+        "weights": {
+          "o÷": -0.9566257518157718,
+          "流口水": -0.9566257518157718
+        }
+      },
+      "effective_revision_ids": [
+        1,
+        2,
+        3
+      ],
+      "effective_counts": {
+        "likes": 1,
+        "dislikes": 2
+      },
+      "progress_matches_effective_labels": true,
+      "both_labels_required": true,
+      "l2_is_default_0_1": true,
+      "all_weights_nonpositive": true,
+      "threshold_nonpositive": true,
+      "score_zero_passes": true,
+      "samples_recomputed_from_saved_full_body": [
+        {
+          "content_key": "zhihu:answer:2087258851024319195",
+          "revision_id": 1,
+          "label": "like",
+          "binary_features": {
+            "o÷": 0,
+            "流口水": 0
+          },
+          "score": 0.0,
+          "retained": true,
+          "training_weight": 0.5
+        },
+        {
+          "content_key": "zhihu:answer:2087160566863356317",
+          "revision_id": 2,
+          "label": "dislike",
+          "binary_features": {
+            "o÷": 0,
+            "流口水": 1
+          },
+          "score": -0.9566257518157718,
+          "retained": false,
+          "training_weight": 0.25
+        },
+        {
+          "content_key": "zhihu:answer:2087158102332272776",
+          "revision_id": 3,
+          "label": "dislike",
+          "binary_features": {
+            "o÷": 1,
+            "流口水": 0
+          },
+          "score": -0.9566257518157718,
+          "retained": false,
+          "training_weight": 0.25
+        }
+      ],
+      "vocabulary_matches_current_negative_feedback": true,
+      "balanced_class_total_weight": {
+        "like": 0.5,
+        "dislike": 0.5
+      },
+      "sample_scores_match_saved_fit": true,
+      "confusion_counts_match_saved_fit": true,
+      "recomputed_balanced_accuracy": 1.0,
+      "balanced_accuracy_matches_saved_fit": true,
+      "threshold_maximizes_balanced_accuracy_with_false_positive_tiebreak": true,
+      "recomputed_regularized_objective": 0.5738334001801749,
+      "objective_matches_saved_fit": true,
+      "recomputed_projected_gradient": 5.981351680617308e-08,
+      "gradient_residual_matches_saved_fit": true,
+      "converged_at_1e_7": true
+    }
+  ],
+  "latest_version": 3,
+  "latest_training_covers_all_feedback": true,
+  "frozen_scan": {
+    "scan_id": "a9c1d18e-f652-5119-a6e5-b9b559c2a7da",
+    "scan_created_at": "2026-09-26T12:19:01.216898+00:00",
+    "learning": {
+      "version": null,
+      "ready": false,
+      "weights": {},
+      "threshold": 0.0,
+      "progress": {
+        "likes": 0,
+        "dislikes": 0
+      },
+      "fit": {},
+      "feedback_revision": 0,
+      "trained_revision": 0,
+      "training_pending": false,
+      "training_error": ""
+    },
+    "new_feedback_did_not_mutate_snapshot": true
+  },
+  "coverage_gaps": [
+    "反馈修订替代旧标签尚未由本次真实数据覆盖。",
+    "当前已观察拟合只表明保存的少量人工样本被正确分类，不能证明对新内容的泛化效果。",
+    "本证据未触发新扫描，不覆盖新学习版本对后续推送或误筛补标的效果。",
+    "训练失败保留旧版本、含负词正样本减罚、字面特征冲突尚需出现对应真实数据后验收。"
+  ],
+  "scope_conclusion": "仅证明3条真实人工反馈的保存、字面关键词校验、版本训练与扫描版本冻结等技术流程；不代表过滤能力达到生产上线要求。用户已要求先到此为止，停止后续验收及等待新反馈。"
+}

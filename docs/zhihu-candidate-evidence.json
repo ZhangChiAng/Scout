@@ -1,0 +1,4410 @@
+{
+  "verified_at": "2026-09-26T12:42:03.975073+00:00",
+  "source": "真实登录知乎响应证据和生产 SQLite 只读快照；未构造样本、未提交反馈或额外发送",
+  "scan_id": "a9c1d18e-f652-5119-a6e5-b9b559c2a7da",
+  "topic_id": 1,
+  "scan_created_at": "2026-09-26T12:19:01.216898+00:00",
+  "scan_status": "completed",
+  "window": {
+    "range": "30d",
+    "start": "2026-08-27T12:19:01.216898+00:00",
+    "end": "2026-09-26T12:19:01.216898+00:00"
+  },
+  "requested_delivery_count": 10,
+  "delivery_count_revision": "用户在本次扫描末尾明确要求发送10篇；由原先3篇校准额度改为冻结配置max_results=10。",
+  "counts": {
+    "search_seeds": 99,
+    "questions": 46,
+    "full_twenty": 24,
+    "below_twenty": 22,
+    "same_question_list_entries": 624,
+    "unique_candidates": 675,
+    "body_success": 675,
+    "sql_candidate_results": 675,
+    "filter_reasons": {
+      "date_expired": 57,
+      "eligible": 618
+    },
+    "multiple_seed_questions": 11,
+    "outside_twenty_seeds": 9,
+    "expired_answer_seeds": 2,
+    "previously_delivered_seeds": 0,
+    "registered_deliveries": 10,
+    "delivered": 10
+  },
+  "candidate_boundary": {
+    "expected_union_count": 675,
+    "unexpected_candidates": [],
+    "missing_candidates": [],
+    "no_twenty_first_replacement": true,
+    "all_outside_twenty_seeds_retained": true,
+    "outside_twenty_seeds": [
+      {
+        "question_id": "2070082903229347029",
+        "seed_key": "zhihu:answer:2079835505177449865",
+        "retained_in_candidates": true
+      },
+      {
+        "question_id": "2080482298223399865",
+        "seed_key": "zhihu:answer:2081440955689853967",
+        "retained_in_candidates": true
+      },
+      {
+        "question_id": "2080482298223399865",
+        "seed_key": "zhihu:answer:2084047658369525546",
+        "retained_in_candidates": true
+      },
+      {
+        "question_id": "2079099260516184281",
+        "seed_key": "zhihu:answer:2079596330498930392",
+        "retained_in_candidates": true
+      },
+      {
+        "question_id": "2079054472190469850",
+        "seed_key": "zhihu:answer:2079086519587976875",
+        "retained_in_candidates": true
+      },
+      {
+        "question_id": "2079305007262914438",
+        "seed_key": "zhihu:answer:2079531924654126928",
+        "retained_in_candidates": true
+      },
+      {
+        "question_id": "2081165724622513410",
+        "seed_key": "zhihu:answer:2082444805796258977",
+        "retained_in_candidates": true
+      },
+      {
+        "question_id": "2079174485035282663",
+        "seed_key": "zhihu:answer:2080359017428300386",
+        "retained_in_candidates": true
+      },
+      {
+        "question_id": "2080789299197384413",
+        "seed_key": "zhihu:answer:2081630539094693178",
+        "retained_in_candidates": true
+      }
+    ],
+    "expired_answer_seeds": [
+      {
+        "content_key": "zhihu:answer:2070524093426841034",
+        "question_id": "2070445459840000945",
+        "published_at": "2026-08-11T06:56:52+00:00",
+        "question_expanded": true,
+        "final_reason": "date_expired"
+      },
+      {
+        "content_key": "zhihu:answer:2027845859115542375",
+        "question_id": "2026939663219181045",
+        "published_at": "2026-04-15T12:28:48+00:00",
+        "question_expanded": true,
+        "final_reason": "date_expired"
+      }
+    ],
+    "all_expired_answer_seeds_expanded": true
+  },
+  "question_expansion_recovery": {
+    "operation_ids": [
+      "77d9f005-ba70-4969-9988-54a2c877a2d0",
+      "0fab98ab-509f-40dd-9b28-3bac56dede93",
+      "bc3ceb17-77d5-49ee-b74d-2167127d0d17",
+      "f6b18c70-b7bd-4da4-998e-dce916ff333f",
+      "88bf790e-c296-4b2f-8092-0c16f417b8e7",
+      "b409c0bc-b4c3-4ba8-ae6e-d4f6ff349cd6",
+      "ae73ad5c-5931-476f-98d4-eed3627bdf96",
+      "9e3aaf7c-cdd3-4f96-ad3b-22bd6467f893",
+      "183082c9-ad26-4f6a-acd3-4fc33581ea0b",
+      "5f1279db-ddba-421f-82b0-bc14d66b6fe6",
+      "b32ba6aa-11d5-44af-b660-ce891395432d",
+      "a5152e01-474b-4227-a4a2-20038cbd6eb9",
+      "9556fe8d-e77a-4750-8ce9-968ebcadcc11",
+      "3d990f2c-a000-40e4-ab05-ac8225c7f055",
+      "c69742d9-8e83-4b58-a41c-cb9523f74fa2",
+      "5102ab8c-7a1e-4de9-a7cd-6206ed247b8f",
+      "c0cc0da8-fcc7-4184-ad41-0123d7c74b6a",
+      "cd6b6ea9-6283-4118-8a73-cb80febb87f2",
+      "ec2a9f4a-233d-445d-a6cb-d14bd897e1b9",
+      "1c36b064-93fe-4e84-95c2-f71624a27ad7",
+      "cf8e04e8-4836-4e58-89e4-87cb71e4f6fa",
+      "4c517e5c-1d05-4223-bd64-ce601008802a",
+      "6ca62831-03ec-4723-9e18-fc1b577de92c",
+      "83d12e1a-afb7-4a40-89ba-6a762cf7aded",
+      "f982e732-c43d-4a02-8a5b-7bdb06bdbf56",
+      "21c7e28c-a2cc-42b2-bb66-1cfa1d92eab3",
+      "aecd0e02-821e-4067-8817-e2fc728a9ac6",
+      "ffe52bd5-59fe-4d96-91df-0ffffef15bab",
+      "6a076328-80ad-4ed3-a469-8620a88c282b",
+      "70ca7be0-5a51-4733-bd4e-a695b29a4199",
+      "daea48a6-8217-4b91-965b-b7aea1deaef0",
+      "c1a95aef-9624-4ade-9c90-832197bcb483",
+      "4e31e875-3a63-4572-ad39-be15ff490a95",
+      "75626b65-6ac2-4e99-8b32-757d4d8f5d58",
+      "a7003700-d7ef-4c8c-b4ec-0767f1e1336c",
+      "a9529689-7150-420d-9b49-543453ad6977",
+      "2ad23e42-1b7e-4f3a-8910-683e537b3bde",
+      "c4686fc3-7906-4420-bb45-65d0537dabf3",
+      "627e0642-45ad-40ae-94ca-b16da972a43e",
+      "5c5e1774-798e-49c4-8171-0c5bccebc41f",
+      "9609a015-7bd4-4a38-9442-25e7c6d0368f",
+      "49857e67-656c-4458-8632-0983a617901b",
+      "d46031c4-3738-45c2-ad96-fb3ea86d67e9",
+      "592a0c03-880a-42b4-949c-5127b37a8b3a",
+      "893f387e-a00e-4195-a4a2-3b45185a4d58",
+      "c9bdc201-2f5e-4178-b3c4-2c906fec4311"
+    ],
+    "operation_count": 46,
+    "all_operation_ids_unique": true,
+    "sql_rows": [
+      {
+        "question_id": "2019879356315476336",
+        "request_uuid": "57014dec-cefe-5e90-b6da-f85fee2e4dc7",
+        "status": "completed"
+      },
+      {
+        "question_id": "2026939663219181045",
+        "request_uuid": "cf44423a-847f-57e3-b88b-8c64a4eba610",
+        "status": "completed"
+      },
+      {
+        "question_id": "2070082903229347029",
+        "request_uuid": "84132c3a-674f-53fd-a882-e4de0fd40e45",
+        "status": "completed"
+      },
+      {
+        "question_id": "2070445459840000945",
+        "request_uuid": "3e59e9b3-68cf-5674-bb5a-82c9368f597b",
+        "status": "completed"
+      },
+      {
+        "question_id": "2077759364111386075",
+        "request_uuid": "1b0b34f1-6038-51b4-b0b2-23b26df4f66c",
+        "status": "completed"
+      },
+      {
+        "question_id": "2078051445073506692",
+        "request_uuid": "002d85fa-0f74-5256-af97-21b5ea273b83",
+        "status": "completed"
+      },
+      {
+        "question_id": "2079054472190469850",
+        "request_uuid": "d2501387-945f-5bb5-95c0-251683869ade",
+        "status": "completed"
+      },
+      {
+        "question_id": "2079055468840990698",
+        "request_uuid": "47067056-4946-5160-9e9a-4680003f4739",
+        "status": "completed"
+      },
+      {
+        "question_id": "2079099260516184281",
+        "request_uuid": "65915e32-37a0-5c77-b3d1-41eb5166cefb",
+        "status": "completed"
+      },
+      {
+        "question_id": "2079153750703456931",
+        "request_uuid": "a5ec6c38-f3d9-5855-b309-ad372ce5af0e",
+        "status": "completed"
+      },
+      {
+        "question_id": "2079174485035282663",
+        "request_uuid": "3aba09cd-00fb-56d7-bdab-8e57023a4b1c",
+        "status": "completed"
+      },
+      {
+        "question_id": "2079305007262914438",
+        "request_uuid": "6d8e465e-c622-5c3b-91a7-1e560583ffd7",
+        "status": "completed"
+      },
+      {
+        "question_id": "2079492419721093889",
+        "request_uuid": "cffa1b86-2309-5350-b03b-081670951076",
+        "status": "completed"
+      },
+      {
+        "question_id": "2079504201315623051",
+        "request_uuid": "d71c3631-133b-5344-9e29-a80e73c0da87",
+        "status": "completed"
+      },
+      {
+        "question_id": "2079666454430072866",
+        "request_uuid": "a6cb1849-1c3d-55ef-8d1f-054baa6333af",
+        "status": "completed"
+      },
+      {
+        "question_id": "2079848471813797681",
+        "request_uuid": "a57c59b5-e6ab-5efb-a9fd-3a77081ece67",
+        "status": "completed"
+      },
+      {
+        "question_id": "2079863733422142709",
+        "request_uuid": "38e43acb-0aa8-52bf-bcff-7255fcf1804a",
+        "status": "completed"
+      },
+      {
+        "question_id": "2079875098979448454",
+        "request_uuid": "2bd79aaa-dc5e-5df5-a459-d45fd6226fed",
+        "status": "completed"
+      },
+      {
+        "question_id": "2079943307522848016",
+        "request_uuid": "30d0ae1a-e40b-55c9-a512-6b25d0da6174",
+        "status": "completed"
+      },
+      {
+        "question_id": "2080205951320248903",
+        "request_uuid": "d5d322f0-7bb4-51a2-82df-36153578b8a1",
+        "status": "completed"
+      },
+      {
+        "question_id": "2080234853623140779",
+        "request_uuid": "930ac238-1e0b-51aa-81c2-f2310cfb867e",
+        "status": "completed"
+      },
+      {
+        "question_id": "2080336745191817631",
+        "request_uuid": "4449f817-fa68-50ea-82e6-714f76709275",
+        "status": "completed"
+      },
+      {
+        "question_id": "2080381381780169114",
+        "request_uuid": "9c256990-bdb6-5b61-ab11-e39c591a0f38",
+        "status": "completed"
+      },
+      {
+        "question_id": "2080454426465153737",
+        "request_uuid": "b676546e-9f53-5a52-919c-5effc66de2f9",
+        "status": "completed"
+      },
+      {
+        "question_id": "2080482298223399865",
+        "request_uuid": "19268b8c-0cbd-5740-8f5f-6d2de7fea5b2",
+        "status": "completed"
+      },
+      {
+        "question_id": "2080789299197384413",
+        "request_uuid": "4e821fd9-bbab-5c0f-8486-fcd7ea4a7222",
+        "status": "completed"
+      },
+      {
+        "question_id": "2081005876551365826",
+        "request_uuid": "6b115819-20a1-58b4-88fa-ebefa4fc9e3d",
+        "status": "completed"
+      },
+      {
+        "question_id": "2081163820538541529",
+        "request_uuid": "52ceac96-edbf-51e7-beff-4f9ba3d68c77",
+        "status": "completed"
+      },
+      {
+        "question_id": "2081165724622513410",
+        "request_uuid": "be47554a-58cb-59d6-b524-89c71d51305a",
+        "status": "completed"
+      },
+      {
+        "question_id": "2081188018577203984",
+        "request_uuid": "9bf13a2b-e1d3-539a-a2ae-8ce05466c372",
+        "status": "completed"
+      },
+      {
+        "question_id": "2081189340986844931",
+        "request_uuid": "3279a7dc-72ae-5f7c-8e6e-e1e00111d686",
+        "status": "completed"
+      },
+      {
+        "question_id": "2082494001488343797",
+        "request_uuid": "86553ce6-e49d-5ed9-93a6-e5242c456d0d",
+        "status": "completed"
+      },
+      {
+        "question_id": "2082509112374452378",
+        "request_uuid": "0db63c87-aad0-544d-820e-6df57b07021d",
+        "status": "completed"
+      },
+      {
+        "question_id": "2082760330015516304",
+        "request_uuid": "169166e2-9420-5881-aa81-7dfa488fafa6",
+        "status": "completed"
+      },
+      {
+        "question_id": "2083530392129233922",
+        "request_uuid": "19a88f23-1c4f-5711-b9e0-118461d800c5",
+        "status": "completed"
+      },
+      {
+        "question_id": "2083571384953696657",
+        "request_uuid": "4bfe0488-68be-5f59-8b6f-c147735dc8a5",
+        "status": "completed"
+      },
+      {
+        "question_id": "2083661972118291726",
+        "request_uuid": "5cf599ec-37f5-525a-a3bd-b58e30210fba",
+        "status": "completed"
+      },
+      {
+        "question_id": "2083895373177931200",
+        "request_uuid": "db5607bd-c0fb-5a77-9550-02e1326e5c19",
+        "status": "completed"
+      },
+      {
+        "question_id": "2083930184395372278",
+        "request_uuid": "fd7be982-d6bb-51d5-bc88-69e4d00319fc",
+        "status": "completed"
+      },
+      {
+        "question_id": "2084432664535241222",
+        "request_uuid": "31f18ed9-ba05-59c4-8c54-9e5b9f5911b9",
+        "status": "completed"
+      },
+      {
+        "question_id": "2085920963540140700",
+        "request_uuid": "ab34fcbe-f215-579a-a2fc-cff6235ab188",
+        "status": "completed"
+      },
+      {
+        "question_id": "2085923908427986610",
+        "request_uuid": "c9556689-819c-5107-92e9-970e9449bf20",
+        "status": "completed"
+      },
+      {
+        "question_id": "2085925368972698066",
+        "request_uuid": "5a116397-0240-5966-ba96-e5be622ca3e3",
+        "status": "completed"
+      },
+      {
+        "question_id": "2085927666914432329",
+        "request_uuid": "b262492b-d0f6-5872-b09f-4acb9be59e25",
+        "status": "completed"
+      },
+      {
+        "question_id": "2086021602219770414",
+        "request_uuid": "358243d7-2109-54f4-8fc1-d607ad5b0bfb",
+        "status": "completed"
+      },
+      {
+        "question_id": "2086024321986839369",
+        "request_uuid": "71104547-da01-5add-9b31-ec2492883720",
+        "status": "completed"
+      }
+    ],
+    "one_expansion_per_question": true,
+    "last_detail_run_id": "cb613ed8-c58e-442d-9760-a537d157751b",
+    "last_detail_recovery_observation": "更新发送数量后重启 Scout，已运行的19篇详情任务保留同一UUID并完成。"
+  },
+  "sql_candidate_checks": {
+    "all_candidate_keys_present": true,
+    "all_results_match_frozen_state": true,
+    "snapshot_identity_mismatches": [],
+    "frozen_learning_version": null,
+    "learning_ready_at_scan_start": false,
+    "all_model_versions_match_snapshot": true
+  },
+  "ranking": {
+    "sql_order": "score DESC, julianday(published_at) DESC, content_key ASC",
+    "top_ten": [
+      {
+        "rank": 1,
+        "content_key": "zhihu:answer:2087264660974200433",
+        "score": 0.0,
+        "published_at": "2026-09-26T11:37:54+00:00",
+        "snapshot_id": 8,
+        "model_version": null
+      },
+      {
+        "rank": 2,
+        "content_key": "zhihu:answer:2087258851024319195",
+        "score": 0.0,
+        "published_at": "2026-09-26T11:14:49+00:00",
+        "snapshot_id": 542,
+        "model_version": null
+      },
+      {
+        "rank": 3,
+        "content_key": "zhihu:answer:2087249846902199640",
+        "score": 0.0,
+        "published_at": "2026-09-26T10:39:02+00:00",
+        "snapshot_id": 543,
+        "model_version": null
+      },
+      {
+        "rank": 4,
+        "content_key": "zhihu:answer:2087246902043660350",
+        "score": 0.0,
+        "published_at": "2026-09-26T10:27:20+00:00",
+        "snapshot_id": 549,
+        "model_version": null
+      },
+      {
+        "rank": 5,
+        "content_key": "zhihu:answer:2087216800173969832",
+        "score": 0.0,
+        "published_at": "2026-09-26T08:27:43+00:00",
+        "snapshot_id": 550,
+        "model_version": null
+      },
+      {
+        "rank": 6,
+        "content_key": "zhihu:article:2087165120925517538",
+        "score": 0.0,
+        "published_at": "2026-09-26T05:35:30+00:00",
+        "snapshot_id": 477,
+        "model_version": null
+      },
+      {
+        "rank": 7,
+        "content_key": "zhihu:answer:2087160566863356317",
+        "score": 0.0,
+        "published_at": "2026-09-26T04:44:16+00:00",
+        "snapshot_id": 84,
+        "model_version": null
+      },
+      {
+        "rank": 8,
+        "content_key": "zhihu:answer:2087158102332272776",
+        "score": 0.0,
+        "published_at": "2026-09-26T04:34:29+00:00",
+        "snapshot_id": 80,
+        "model_version": null
+      },
+      {
+        "rank": 9,
+        "content_key": "zhihu:article:2087140324762181849",
+        "score": 0.0,
+        "published_at": "2026-09-26T03:24:38+00:00",
+        "snapshot_id": 478,
+        "model_version": null
+      },
+      {
+        "rank": 10,
+        "content_key": "zhihu:answer:2087130507280700381",
+        "score": 0.0,
+        "published_at": "2026-09-26T02:44:49+00:00",
+        "snapshot_id": 541,
+        "model_version": null
+      }
+    ],
+    "frozen_selected_order_matches_sql": true,
+    "delivery_order_matches_sql": true,
+    "frozen_max_results": 10
+  },
+  "deliveries": [
+    {
+      "article_key": "zhihu:answer:2087264660974200433",
+      "send_uuid": "78fff4db-d91f-5cda-a6bf-4a5a063dc81e",
+      "status": "delivered",
+      "message_id": "om_x100b644f9d1070a4b2afd57999858a7",
+      "delivered_at": 1790426430.34319,
+      "snapshot_id": 8,
+      "message_type": "interactive"
+    },
+    {
+      "article_key": "zhihu:answer:2087258851024319195",
+      "send_uuid": "5e0b57ca-4214-52d0-bbda-3e7648bfe42a",
+      "status": "delivered",
+      "message_id": "om_x100b644f9af01ca4b16de7c9772e236",
+      "delivered_at": 1790426436.254312,
+      "snapshot_id": 542,
+      "message_type": "interactive"
+    },
+    {
+      "article_key": "zhihu:answer:2087249846902199640",
+      "send_uuid": "3957087b-58c5-5e5a-8667-b2e01cd0fa4c",
+      "status": "delivered",
+      "message_id": "om_x100b644f9a51cca4b3bc4f183652334",
+      "delivered_at": 1790426442.2102337,
+      "snapshot_id": 543,
+      "message_type": "interactive"
+    },
+    {
+      "article_key": "zhihu:answer:2087246902043660350",
+      "send_uuid": "6c342d05-b65e-5260-b324-ed48f25c36b1",
+      "status": "delivered",
+      "message_id": "om_x100b644f9a3584a8b3b08f7dd2c0a5c",
+      "delivered_at": 1790426447.8761125,
+      "snapshot_id": 549,
+      "message_type": "interactive"
+    },
+    {
+      "article_key": "zhihu:answer:2087216800173969832",
+      "send_uuid": "b6399e65-048d-5072-9215-e687fb533336",
+      "status": "delivered",
+      "message_id": "om_x100b644f9b9f5930b256b9ec76042bf",
+      "delivered_at": 1790426453.560443,
+      "snapshot_id": 550,
+      "message_type": "interactive"
+    },
+    {
+      "article_key": "zhihu:article:2087165120925517538",
+      "send_uuid": "72f40b0c-9db5-5f40-af56-b91980a703ed",
+      "status": "delivered",
+      "message_id": "om_x100b644f9b7ca0a0b3ec2618232edac",
+      "delivered_at": 1790426459.528058,
+      "snapshot_id": 477,
+      "message_type": "interactive"
+    },
+    {
+      "article_key": "zhihu:answer:2087160566863356317",
+      "send_uuid": "d20da2c6-a82e-5f89-b168-562cd9a36813",
+      "status": "delivered",
+      "message_id": "om_x100b644f98dd54b8b4b085ef5e26814",
+      "delivered_at": 1790426465.4855294,
+      "snapshot_id": 84,
+      "message_type": "interactive"
+    },
+    {
+      "article_key": "zhihu:answer:2087158102332272776",
+      "send_uuid": "b66f8d52-9603-5b7a-96c4-a8eaf9f0e119",
+      "status": "delivered",
+      "message_id": "om_x100b644f98bd94a4b48af252a2b4134",
+      "delivered_at": 1790426471.4563344,
+      "snapshot_id": 80,
+      "message_type": "interactive"
+    },
+    {
+      "article_key": "zhihu:article:2087140324762181849",
+      "send_uuid": "52afa54d-d29f-56a5-8458-003ebaf315fa",
+      "status": "delivered",
+      "message_id": "om_x100b644f98029ca0b2406f3103ce896",
+      "delivered_at": 1790426477.4526482,
+      "snapshot_id": 478,
+      "message_type": "interactive"
+    },
+    {
+      "article_key": "zhihu:answer:2087130507280700381",
+      "send_uuid": "04802381-d4d3-52e0-a51d-c3186bd220ce",
+      "status": "delivered",
+      "message_id": "om_x100b644f99e62ca0b36739f42f30563",
+      "delivered_at": 1790426483.1253014,
+      "snapshot_id": 541,
+      "message_type": "interactive"
+    }
+  ],
+  "stable_identity_checks": {
+    "duplicate_identity_rows": [],
+    "unique_send_uuids": true,
+    "all_message_ids_present": true,
+    "all_interactive": true
+  },
+  "coverage_gaps": [
+    "本次99个种子没有历史已成功送达身份，尚不能据此证明已送达种子仍触发扩展。",
+    "此扫描开始时无两类反馈，关键词学习版本为空；本报告不覆盖真实喜欢/不喜欢、关键词权重重估或偏好过滤。",
+    "本报告观察一次扫描和其采集恢复，不代替跨话题、重复扫描及发送结果未知后恢复的验收。"
+  ],
+  "original_seed_records": [
+    {
+      "content_key": "zhihu:article:2087165120925517538",
+      "question_id": null,
+      "published_at": "2026-09-26T05:35:30+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2087140324762181849",
+      "question_id": null,
+      "published_at": "2026-09-26T03:24:38+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2087125950429389796",
+      "question_id": null,
+      "published_at": "2026-09-26T02:30:24+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2086905418517893860",
+      "question_id": null,
+      "published_at": "2026-09-25T11:50:24+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2086392167476508536",
+      "question_id": null,
+      "published_at": "2026-09-24T01:50:56+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2086221627575092269",
+      "question_id": "2085920963540140700",
+      "published_at": "2026-09-23T14:33:16+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2086158298940699025",
+      "question_id": null,
+      "published_at": "2026-09-23T10:21:37+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2086131428337702065",
+      "question_id": null,
+      "published_at": "2026-09-23T08:49:44+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2086105455265309370",
+      "question_id": "2019879356315476336",
+      "published_at": "2026-09-23T06:51:38+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2086082914844947426",
+      "question_id": null,
+      "published_at": "2026-09-23T05:56:58+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2086070268464780662",
+      "question_id": null,
+      "published_at": "2026-09-23T04:31:49+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2086068658145698522",
+      "question_id": "2077759364111386075",
+      "published_at": "2026-09-23T04:25:25+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2086068465912304433",
+      "question_id": null,
+      "published_at": "2026-09-23T04:25:24+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2086241882724737824",
+      "question_id": "2086021602219770414",
+      "published_at": "2026-09-23T15:53:45+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2086109584989610458",
+      "question_id": "2085927666914432329",
+      "published_at": "2026-09-23T07:08:03+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2086065786016227559",
+      "question_id": "2085923908427986610",
+      "published_at": "2026-09-23T04:14:00+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2086050758001170243",
+      "question_id": "2086024321986839369",
+      "published_at": "2026-09-23T03:14:17+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2086049693201704610",
+      "question_id": "2085925368972698066",
+      "published_at": "2026-09-23T03:10:03+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2086024578300696315",
+      "question_id": null,
+      "published_at": "2026-09-23T01:32:31+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2085790352443716459",
+      "question_id": "2082494001488343797",
+      "published_at": "2026-09-22T09:59:32+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2085780430834381719",
+      "question_id": null,
+      "published_at": "2026-09-22T09:20:59+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2085542227149959812",
+      "question_id": null,
+      "published_at": "2026-09-21T17:38:55+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2085477602727302953",
+      "question_id": null,
+      "published_at": "2026-09-21T13:16:52+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2085431200659804226",
+      "question_id": null,
+      "published_at": "2026-09-21T10:53:00+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2085431919886582758",
+      "question_id": null,
+      "published_at": "2026-09-21T10:22:16+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2085403727075319988",
+      "question_id": null,
+      "published_at": "2026-09-21T08:32:14+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2085382369197012292",
+      "question_id": null,
+      "published_at": "2026-09-21T06:59:14+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2085313408690345385",
+      "question_id": "2083895373177931200",
+      "published_at": "2026-09-21T02:24:19+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2084989831797532281",
+      "question_id": "2079492419721093889",
+      "published_at": "2026-09-20T04:58:33+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2084435954740224890",
+      "question_id": null,
+      "published_at": "2026-09-19T18:51:09+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2084719243929576169",
+      "question_id": null,
+      "published_at": "2026-09-19T11:53:04+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2084581346094204446",
+      "question_id": "2084432664535241222",
+      "published_at": "2026-09-19T01:55:22+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2084401334040764447",
+      "question_id": null,
+      "published_at": "2026-09-18T16:18:05+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2084381386237124681",
+      "question_id": null,
+      "published_at": "2026-09-18T12:40:48+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2084380770689347946",
+      "question_id": null,
+      "published_at": "2026-09-18T12:39:06+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2084023239546818848",
+      "question_id": null,
+      "published_at": "2026-09-17T12:57:56+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2083981293298120337",
+      "question_id": "2083930184395372278",
+      "published_at": "2026-09-17T10:10:58+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2083966359810135487",
+      "question_id": null,
+      "published_at": "2026-09-17T09:13:56+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2079835505177449865",
+      "question_id": "2070082903229347029",
+      "published_at": "2026-09-05T23:37:05+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2080832671404528628",
+      "question_id": "2079863733422142709",
+      "published_at": "2026-09-08T17:39:28+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2081440955689853967",
+      "question_id": "2080482298223399865",
+      "published_at": "2026-09-10T09:56:35+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2079596330498930392",
+      "question_id": "2079099260516184281",
+      "published_at": "2026-09-05T07:46:42+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2079174835666677865",
+      "question_id": "2079054472190469850",
+      "published_at": "2026-09-04T03:51:50+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2085927530876478983",
+      "question_id": "2085920963540140700",
+      "published_at": "2026-09-22T19:04:38+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2080641497368741328",
+      "question_id": "2080381381780169114",
+      "published_at": "2026-09-08T04:59:49+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2079514838921897638",
+      "question_id": "2079504201315623051",
+      "published_at": "2026-09-05T02:22:53+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2081320769313837762",
+      "question_id": "2081005876551365826",
+      "published_at": "2026-09-10T01:59:00+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2081021748305192922",
+      "question_id": null,
+      "published_at": "2026-09-09T06:25:07+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2079214583731044427",
+      "question_id": "2079153750703456931",
+      "published_at": "2026-09-04T06:29:46+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2081032550777148624",
+      "question_id": "2079305007262914438",
+      "published_at": "2026-09-09T06:53:43+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2080618388754384710",
+      "question_id": "2079492419721093889",
+      "published_at": "2026-09-08T03:27:59+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2082444805796258977",
+      "question_id": "2081165724622513410",
+      "published_at": "2026-09-13T04:25:31+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2080359017428300386",
+      "question_id": "2079174485035282663",
+      "published_at": "2026-09-07T10:17:20+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2083531601279971804",
+      "question_id": "2081163820538541529",
+      "published_at": "2026-09-16T04:24:03+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2082778733392443379",
+      "question_id": "2079055468840990698",
+      "published_at": "2026-09-14T02:32:26+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2080307545181254659",
+      "question_id": null,
+      "published_at": "2026-09-07T07:41:05+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2081630539094693178",
+      "question_id": "2080789299197384413",
+      "published_at": "2026-09-10T22:29:55+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2079964179826488560",
+      "question_id": "2079943307522848016",
+      "published_at": "2026-09-06T08:08:24+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2080390064916452697",
+      "question_id": "2079875098979448454",
+      "published_at": "2026-09-07T12:20:43+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2080601390020288548",
+      "question_id": "2080205951320248903",
+      "published_at": "2026-09-08T02:20:27+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2025315653536490756",
+      "question_id": null,
+      "published_at": "2026-04-08T13:06:05+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2083925275553818045",
+      "question_id": "2083530392129233922",
+      "published_at": "2026-09-17T06:28:23+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2083575600934143306",
+      "question_id": "2082760330015516304",
+      "published_at": "2026-09-16T07:18:54+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2078607416799802983",
+      "question_id": "2078051445073506692",
+      "published_at": "2026-09-02T14:17:06+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2081072242335692795",
+      "question_id": null,
+      "published_at": "2026-09-09T09:31:27+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2070524093426841034",
+      "question_id": "2070445459840000945",
+      "published_at": "2026-08-11T06:56:52+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2082898482738771810",
+      "question_id": null,
+      "published_at": "2026-09-14T10:34:58+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2080471912623379404",
+      "question_id": "2080454426465153737",
+      "published_at": "2026-09-07T17:45:57+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2027845859115542375",
+      "question_id": "2026939663219181045",
+      "published_at": "2026-04-15T12:28:48+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2080238395876558688",
+      "question_id": "2080234853623140779",
+      "published_at": "2026-09-07T02:18:02+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2079897292480500633",
+      "question_id": null,
+      "published_at": "2026-09-06T03:42:51+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2080220986331476350",
+      "question_id": null,
+      "published_at": "2026-09-07T01:09:23+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2081411494877709305",
+      "question_id": "2081189340986844931",
+      "published_at": "2026-09-10T07:59:31+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2083471342863639334",
+      "question_id": null,
+      "published_at": "2026-09-16T00:25:19+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2080694095480099795",
+      "question_id": "2079666454430072866",
+      "published_at": "2026-09-08T08:28:49+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2079892652833690389",
+      "question_id": "2079848471813797681",
+      "published_at": "2026-09-06T03:24:10+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2080785869670303499",
+      "question_id": "2080336745191817631",
+      "published_at": "2026-09-08T14:33:30+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2085534649389007762",
+      "question_id": null,
+      "published_at": "2026-09-21T17:31:37+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2085278974305949461",
+      "question_id": null,
+      "published_at": "2026-09-21T00:10:52+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2084278623637451587",
+      "question_id": "2083571384953696657",
+      "published_at": "2026-09-18T05:52:28+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2084247649516110185",
+      "question_id": "2081188018577203984",
+      "published_at": "2026-09-18T03:49:23+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2084222227352966955",
+      "question_id": "2082494001488343797",
+      "published_at": "2026-09-18T02:08:21+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2084047658369525546",
+      "question_id": "2080482298223399865",
+      "published_at": "2026-09-17T14:34:41+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2084042592698766636",
+      "question_id": "2083530392129233922",
+      "published_at": "2026-09-17T14:14:33+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2083868384924639549",
+      "question_id": "2083661972118291726",
+      "published_at": "2026-09-17T02:42:19+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2083711580861159327",
+      "question_id": null,
+      "published_at": "2026-09-16T16:19:38+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2083576610117129408",
+      "question_id": null,
+      "published_at": "2026-09-16T07:49:55+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2083576599128052168",
+      "question_id": null,
+      "published_at": "2026-09-16T07:40:37+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2080429491831285188",
+      "question_id": "2070082903229347029",
+      "published_at": "2026-09-07T14:57:23+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2082778007786333110",
+      "question_id": "2079055468840990698",
+      "published_at": "2026-09-14T02:29:33+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2079086519587976875",
+      "question_id": "2079054472190469850",
+      "published_at": "2026-09-03T22:00:53+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2080013448440816928",
+      "question_id": null,
+      "published_at": "2026-09-06T11:26:32+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2079531924654126928",
+      "question_id": "2079305007262914438",
+      "published_at": "2026-09-05T03:30:46+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2078144928190936123",
+      "question_id": "2078051445073506692",
+      "published_at": "2026-09-01T07:39:20+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2080054751614464664",
+      "question_id": "2079174485035282663",
+      "published_at": "2026-09-06T14:08:18+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2079942586391965706",
+      "question_id": null,
+      "published_at": "2026-09-06T06:48:14+00:00"
+    },
+    {
+      "content_key": "zhihu:answer:2083162104597570281",
+      "question_id": "2082509112374452378",
+      "published_at": "2026-09-15T03:55:49+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2083184874588992797",
+      "question_id": null,
+      "published_at": "2026-09-15T05:36:19+00:00"
+    },
+    {
+      "content_key": "zhihu:article:2081706862399985179",
+      "question_id": null,
+      "published_at": "2026-09-12T07:21:44+00:00"
+    }
+  ],
+  "questions": [
+    {
+      "question_id": "2085920963540140700",
+      "request_uuid": "ab34fcbe-f215-579a-a2fc-cff6235ab188",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2086221627575092269",
+        "zhihu:answer:2085927530876478983"
+      ],
+      "ranked_answer_ids": [
+        "2086221627575092269",
+        "2086677165626636173",
+        "2087130507280700381",
+        "2087258851024319195",
+        "2087249846902199640",
+        "2085927530876478983"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 6,
+      "termination": [
+        "end_of_list"
+      ],
+      "collected_at": "2026-09-26T12:20:32.267233+00:00",
+      "evidence": [
+        {
+          "sha256": "f7387b7d1641cb2a400eaea0e701029195ac1bf5070e63eaff5def232b69cbec",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2086221627575092269",
+            "2086677165626636173",
+            "2087130507280700381",
+            "2087258851024319195",
+            "2087249846902199640"
+          ]
+        },
+        {
+          "sha256": "a838a0752c2b0787559a57a32ec0bc68ce4342f2f95c95e239bc10b870714fd4",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2085927530876478983"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2019879356315476336",
+      "request_uuid": "57014dec-cefe-5e90-b6da-f85fee2e4dc7",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2086105455265309370"
+      ],
+      "ranked_answer_ids": [
+        "2021116239930475451",
+        "2022677002893763007",
+        "2031308404032063430",
+        "2061950022913201636",
+        "2061486832047624415",
+        "2087246902043660350",
+        "2087216800173969832",
+        "2087088028544194474",
+        "2086105455265309370",
+        "2085386305203070066",
+        "2081451121495761697",
+        "2080007990242034656",
+        "2077838107853041999",
+        "2077001509653452083",
+        "2074847725435236867",
+        "2072826967888500101",
+        "2069229511036630689",
+        "2069130733805949532",
+        "2068602282497816509",
+        "2063604831143584718"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 20,
+      "termination": [
+        "limit_reached"
+      ],
+      "collected_at": "2026-09-26T12:20:57.443485+00:00",
+      "evidence": [
+        {
+          "sha256": "ad155bd1a7b3ae9b0489c868eeb9783de04931f84d128b52035c0368c1b78d7b",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2021116239930475451",
+            "2022677002893763007",
+            "2031308404032063430",
+            "2061950022913201636",
+            "2061486832047624415"
+          ]
+        },
+        {
+          "sha256": "49fd0e3e6bfe83ce10109366b975a354a1b2319266710da0d5b511f832a8882f",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2087246902043660350",
+            "2087216800173969832",
+            "2087088028544194474",
+            "2086105455265309370",
+            "2085386305203070066"
+          ]
+        },
+        {
+          "sha256": "58c928fb728303373d9af00b49dfe9c76b6d98f9efda672689857051c77eec18",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2081451121495761697",
+            "2080007990242034656",
+            "2077838107853041999",
+            "2077001509653452083",
+            "2074847725435236867"
+          ]
+        },
+        {
+          "sha256": "4d837f1476de5933f42b6b104f0b3c91997025ac004325e1a2cf28721048cb41",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2074847725435236867",
+            "2072826967888500101",
+            "2069229511036630689",
+            "2069130733805949532",
+            "2068602282497816509"
+          ]
+        },
+        {
+          "sha256": "daa2451967072d624cb3ec00c03c15265a42691ff0d13020a8baf61dd8546d93",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2063604831143584718",
+            "2062844147665463001",
+            "2061107581989433559",
+            "2060775797884035764",
+            "2059105207649415385"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2077759364111386075",
+      "request_uuid": "1b0b34f1-6038-51b4-b0b2-23b26df4f66c",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2086068658145698522"
+      ],
+      "ranked_answer_ids": [
+        "2078080091549087400",
+        "2078094034099349382",
+        "2078148931679162707",
+        "2078083985335441201",
+        "2078112322317567767",
+        "2078454881002832205",
+        "2078362811315516544",
+        "2078451871115752029",
+        "2078386468288980949",
+        "2078158853754056704",
+        "2078345098274796396",
+        "2078435339367092668",
+        "2078416530467984666",
+        "2078485555495621141",
+        "2078096957432771911",
+        "2086068658145698522",
+        "2078176585975444544",
+        "2080767540758832824",
+        "2078439016203134175",
+        "2078102757542777078"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 20,
+      "termination": [
+        "limit_reached"
+      ],
+      "collected_at": "2026-09-26T12:21:22.650964+00:00",
+      "evidence": [
+        {
+          "sha256": "cd64a244f5e7c5e3e6c67d1b85e8f5d63575f2c83a31bf62511b13aa020768ee",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2078080091549087400",
+            "2078094034099349382",
+            "2078148931679162707",
+            "2078083985335441201",
+            "2078112322317567767"
+          ]
+        },
+        {
+          "sha256": "57558effbad2e1f6ba9a576bd609779c8a7f7525068131206819607d2a0bbb12",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2078454881002832205",
+            "2078362811315516544",
+            "2078451871115752029",
+            "2078386468288980949",
+            "2078158853754056704"
+          ]
+        },
+        {
+          "sha256": "7bf6e28ffa9f24499adf9290fb5a34988dfb4e5b1e37c06f7443fd87fa4fd61d",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2078345098274796396",
+            "2078435339367092668",
+            "2078416530467984666",
+            "2078485555495621141",
+            "2078096957432771911"
+          ]
+        },
+        {
+          "sha256": "81eed442563bca0d9b7de76a7e7fe8c878cda4c542320dcd8aa855f27d0c8a8b",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2078096957432771911",
+            "2086068658145698522",
+            "2078176585975444544",
+            "2080767540758832824",
+            "2078439016203134175"
+          ]
+        },
+        {
+          "sha256": "0fca9b03a85f1deffea0174257e4583a834c030ec8a2c151e781985141861ffe",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2078102757542777078",
+            "2078453001547793014",
+            "2079700164604847729",
+            "2078084414731564206",
+            "2079387456978343695"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2086021602219770414",
+      "request_uuid": "358243d7-2109-54f4-8fc1-d607ad5b0bfb",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2086241882724737824"
+      ],
+      "ranked_answer_ids": [
+        "2086159792054314483",
+        "2086241882724737824"
+      ],
+      "ranks": [
+        1,
+        2
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 2,
+      "termination": [
+        "end_of_list"
+      ],
+      "collected_at": "2026-09-26T12:21:37.304061+00:00",
+      "evidence": [
+        {
+          "sha256": "fc8dba85faa9cc4469ce96d4e6a10062a5227c0b7a18c2d286ac2263c24e4bba",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2086159792054314483",
+            "2086241882724737824"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2085927666914432329",
+      "request_uuid": "b262492b-d0f6-5872-b09f-4acb9be59e25",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2086109584989610458"
+      ],
+      "ranked_answer_ids": [
+        "2086023780879561000",
+        "2086425291707175487",
+        "2086123854062162621",
+        "2086027203205190066",
+        "2086048186792264105",
+        "2086160717678391549",
+        "2086085168520024784",
+        "2086154448733316098",
+        "2086204540001457961",
+        "2086605017063102170",
+        "2086109584989610458",
+        "2085984539327870176",
+        "2086115136624923728",
+        "2087096790017369147",
+        "2086368309780428542",
+        "2085986150959915108",
+        "2085967835675809361",
+        "2086086667153192108",
+        "2086013697131136953",
+        "2086218492773134678"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 20,
+      "termination": [
+        "limit_reached"
+      ],
+      "collected_at": "2026-09-26T12:21:57.526920+00:00",
+      "evidence": [
+        {
+          "sha256": "9cf73673b5e611ac32bf053d151aebc00918d80bd177fddcc25531f4cceb65fb",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2086023780879561000",
+            "2086425291707175487",
+            "2086123854062162621",
+            "2086027203205190066",
+            "2086048186792264105"
+          ]
+        },
+        {
+          "sha256": "785146ff1620b80393549ec30b16a830e11eb4fa41b67308a7946bad6c90d074",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2086160717678391549",
+            "2086085168520024784",
+            "2086154448733316098",
+            "2086204540001457961",
+            "2086605017063102170"
+          ]
+        },
+        {
+          "sha256": "b783b9be30ae210a78d96cb318a70b509fbb6d9260b032734bcb49ee57d1410a",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2086109584989610458",
+            "2085984539327870176",
+            "2086115136624923728",
+            "2087096790017369147",
+            "2086368309780428542"
+          ]
+        },
+        {
+          "sha256": "77aeea41285d219426693e125d279f082d98f6c83d02444e457eedf3a0b99b52",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2085986150959915108",
+            "2085967835675809361",
+            "2086086667153192108",
+            "2086013697131136953",
+            "2086218492773134678"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2085923908427986610",
+      "request_uuid": "c9556689-819c-5107-92e9-970e9449bf20",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2086065786016227559"
+      ],
+      "ranked_answer_ids": [
+        "2086040702266373924",
+        "2085979259898802452",
+        "2086059368706057431",
+        "2086588479979402885",
+        "2086041705363591301",
+        "2086019385681094567",
+        "2086026262124966151",
+        "2086037051431035716",
+        "2086071002774218369",
+        "2085930938538652372",
+        "2085934917695844465",
+        "2086027852215076259",
+        "2085957802493793999",
+        "2086065786016227559",
+        "2086058911443042609",
+        "2086062419521161044",
+        "2085998324159604077",
+        "2086016917219840785",
+        "2086164071276195906",
+        "2086048194300061570"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 20,
+      "termination": [
+        "limit_reached"
+      ],
+      "collected_at": "2026-09-26T12:22:17.775642+00:00",
+      "evidence": [
+        {
+          "sha256": "e6890e7a49b553eb3475b2489c513ae7ae584476a6ba43a804e488d49544af6e",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2086040702266373924",
+            "2085979259898802452",
+            "2086059368706057431",
+            "2086588479979402885",
+            "2086041705363591301"
+          ]
+        },
+        {
+          "sha256": "fe312d13e34fbfe29a5bf7894387ae8f2a25f2f92081315fed59b03124ea4d80",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2086019385681094567",
+            "2086026262124966151",
+            "2086037051431035716",
+            "2086071002774218369",
+            "2085930938538652372"
+          ]
+        },
+        {
+          "sha256": "aa3953c8abb460871bc6f4ca45cc69ecfc44f3edfcce2877c27522ce3e8cba8d",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2085934917695844465",
+            "2086027852215076259",
+            "2085957802493793999",
+            "2086065786016227559",
+            "2086058911443042609"
+          ]
+        },
+        {
+          "sha256": "1809c4375ccf05da87d87724910af084821a6d6dd029be7ee1289b169e164570",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2086062419521161044",
+            "2085998324159604077",
+            "2086016917219840785",
+            "2086164071276195906",
+            "2086048194300061570"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2086024321986839369",
+      "request_uuid": "71104547-da01-5add-9b31-ec2492883720",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2086050758001170243"
+      ],
+      "ranked_answer_ids": [
+        "2086130514184950792",
+        "2086423869053842074",
+        "2086029133591720724",
+        "2086064557085271585",
+        "2086941237844636755",
+        "2086109989236692618",
+        "2086050758001170243",
+        "2086420322836862546",
+        "2086443881000915364",
+        "2086496816443418619",
+        "2086496881866192051",
+        "2086086291708555828",
+        "2086364944556110861",
+        "2086279464988718758",
+        "2086359968710763679",
+        "2086514306498275124",
+        "2086460843085058372",
+        "2086434205668472677",
+        "2086278416848904569",
+        "2086184201674552026"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 20,
+      "termination": [
+        "limit_reached"
+      ],
+      "collected_at": "2026-09-26T12:22:38.122734+00:00",
+      "evidence": [
+        {
+          "sha256": "4ed3386c4062f44018079e14a1b6b303852e55a985b654fea6ab2fee2d805c24",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2086130514184950792",
+            "2086423869053842074",
+            "2086029133591720724",
+            "2086064557085271585",
+            "2086941237844636755"
+          ]
+        },
+        {
+          "sha256": "937c191d596a4f446ece02fd091322b05d1d905c2cf7dc67f31f751cd38382fe",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2086109989236692618",
+            "2086050758001170243",
+            "2086420322836862546",
+            "2086443881000915364",
+            "2086496816443418619"
+          ]
+        },
+        {
+          "sha256": "5638334a26a1d484d005a8d10d2405b414df663f528c7c97f4fe8913720e43cb",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2086496881866192051",
+            "2086086291708555828",
+            "2086364944556110861",
+            "2086279464988718758",
+            "2086359968710763679"
+          ]
+        },
+        {
+          "sha256": "5db26034e4c180a8691c01a66b56e1f36bb92f8a2acd5bde8c06550d462ed174",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2086514306498275124",
+            "2086460843085058372",
+            "2086434205668472677",
+            "2086278416848904569",
+            "2086184201674552026"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2085925368972698066",
+      "request_uuid": "5a116397-0240-5966-ba96-e5be622ca3e3",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2086049693201704610"
+      ],
+      "ranked_answer_ids": [
+        "2086049693201704610",
+        "2086509931201557499",
+        "2086360090693603505",
+        "2086054014299398962",
+        "2085977074137837942"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 5,
+      "termination": [
+        "end_of_list"
+      ],
+      "collected_at": "2026-09-26T12:22:48.240919+00:00",
+      "evidence": [
+        {
+          "sha256": "5d4df2e2a82d44b5f080e3a5ec94a4a0c15d229c5ca1eaca95ef0b6c509fe85d",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2086049693201704610",
+            "2086509931201557499",
+            "2086360090693603505",
+            "2086054014299398962",
+            "2085977074137837942"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2082494001488343797",
+      "request_uuid": "86553ce6-e49d-5ed9-93a6-e5242c456d0d",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2085790352443716459",
+        "zhihu:answer:2084222227352966955"
+      ],
+      "ranked_answer_ids": [
+        "2086367478242883451",
+        "2085799552926347373",
+        "2085790352443716459",
+        "2085788715692179946",
+        "2085783530500576859",
+        "2085503107316958232",
+        "2085391032481593243",
+        "2084222227352966955",
+        "2084210436027827629",
+        "2083974868446490861",
+        "2083249854797690119",
+        "2082833293788046206",
+        "2082852616380347332",
+        "2084321511683404068",
+        "2084936996053587073"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 15,
+      "termination": [
+        "end_of_list"
+      ],
+      "collected_at": "2026-09-26T12:23:03.455984+00:00",
+      "evidence": [
+        {
+          "sha256": "1568a9cf68982d2d48ae176ecf835e985eb69889cca0ce8a3c746b22e7f9c15a",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2086367478242883451",
+            "2085799552926347373",
+            "2085790352443716459",
+            "2085788715692179946",
+            "2085783530500576859"
+          ]
+        },
+        {
+          "sha256": "51bea0eaad522c8c090bae6a11118c9eea70da6bc830a38ea28b820a3e68b65c",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2085503107316958232",
+            "2085391032481593243",
+            "2084222227352966955",
+            "2084210436027827629",
+            "2083974868446490861"
+          ]
+        },
+        {
+          "sha256": "193490c4a00c27a2ff227c28164d2e132907d4ce4c70e8064b985fd1a9fcde0f",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2083249854797690119",
+            "2082833293788046206",
+            "2082852616380347332",
+            "2084321511683404068",
+            "2084936996053587073"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2083895373177931200",
+      "request_uuid": "db5607bd-c0fb-5a77-9550-02e1326e5c19",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2085313408690345385"
+      ],
+      "ranked_answer_ids": [
+        "2085323606071035210",
+        "2083989208205616099",
+        "2085428657691030201",
+        "2083935448435639935",
+        "2084924957243582361",
+        "2085313408690345385",
+        "2083995568737628891",
+        "2084099614551102975",
+        "2084018165886068205",
+        "2085460163977389625",
+        "2085778102681089847",
+        "2085497865468634143",
+        "2085938449341748475",
+        "2085453670473384627",
+        "2085361216998982463",
+        "2084305316972336903",
+        "2085530074456115118",
+        "2086391580009707336",
+        "2086263431863198167",
+        "2085806449284866338"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 20,
+      "termination": [
+        "limit_reached"
+      ],
+      "collected_at": "2026-09-26T12:23:23.478654+00:00",
+      "evidence": [
+        {
+          "sha256": "8473effbbc3c32a468b46e7ac37eff54b207de0bc89be440a3c38cc3d7f04d70",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2085323606071035210",
+            "2083989208205616099",
+            "2085428657691030201",
+            "2083935448435639935",
+            "2084924957243582361"
+          ]
+        },
+        {
+          "sha256": "ab06476412ca895642f3487b96d62a1a4f992a1b07ad7c303b09487980b865e8",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2085313408690345385",
+            "2083995568737628891",
+            "2084099614551102975",
+            "2084018165886068205",
+            "2085460163977389625"
+          ]
+        },
+        {
+          "sha256": "6f1abc9a7005c88e4834d16b6466316ade3716b618f36bd38658fbc2ee21894c",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2085778102681089847",
+            "2085497865468634143",
+            "2085938449341748475",
+            "2085453670473384627",
+            "2085361216998982463"
+          ]
+        },
+        {
+          "sha256": "116148485455df162386d053bd7e9e673e37b5c42f18f74ffd89becd32e769a2",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2084305316972336903",
+            "2085530074456115118",
+            "2086391580009707336",
+            "2086263431863198167",
+            "2085806449284866338"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2079492419721093889",
+      "request_uuid": "cffa1b86-2309-5350-b03b-081670951076",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2084989831797532281",
+        "zhihu:answer:2080618388754384710"
+      ],
+      "ranked_answer_ids": [
+        "2084989831797532281",
+        "2079843516839212417",
+        "2079935373304651958",
+        "2080655635184723827",
+        "2080236069702972133",
+        "2081015867350042364",
+        "2083528430361101596",
+        "2087264660974200433",
+        "2082803767666274941",
+        "2080355128956154917",
+        "2079920058445338520",
+        "2079523482367424173",
+        "2080370621821858182",
+        "2083141586200937979",
+        "2080670023883006028",
+        "2080618388754384710"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 16,
+      "termination": [
+        "end_of_list"
+      ],
+      "collected_at": "2026-09-26T12:23:33.735891+00:00",
+      "evidence": [
+        {
+          "sha256": "98e2188d6ad32653b1a46d1e461733f6e929ac1157723ef83d5205ef93590194",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2084989831797532281",
+            "2079843516839212417",
+            "2079935373304651958",
+            "2080655635184723827",
+            "2080236069702972133",
+            "2081015867350042364",
+            "2083528430361101596",
+            "2087264660974200433",
+            "2082803767666274941",
+            "2080355128956154917",
+            "2079920058445338520",
+            "2079523482367424173",
+            "2080370621821858182",
+            "2083141586200937979",
+            "2080670023883006028",
+            "2080618388754384710"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2084432664535241222",
+      "request_uuid": "31f18ed9-ba05-59c4-8c54-9e5b9f5911b9",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2084581346094204446"
+      ],
+      "ranked_answer_ids": [
+        "2084581346094204446",
+        "2084609978388703136",
+        "2084793609275160382",
+        "2084958999842240301",
+        "2085221870589175756",
+        "2084557996856702519",
+        "2084589359404160248",
+        "2085206332903371471",
+        "2085285009557026749",
+        "2084435645116704209",
+        "2084588921359438178",
+        "2084586077533348481",
+        "2084553367913874081",
+        "2085103768522306745",
+        "2085155911480391255",
+        "2085096525688993331",
+        "2084940864099455203",
+        "2084533732048892481",
+        "2084644903695529142",
+        "2084580655535595793"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 20,
+      "termination": [
+        "limit_reached"
+      ],
+      "collected_at": "2026-09-26T12:23:43.990865+00:00",
+      "evidence": [
+        {
+          "sha256": "13338e4ea2d6bebbc68210fc93368b84fde25ec55a97cd4c0759b9a64f3439ae",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2084581346094204446",
+            "2084609978388703136",
+            "2084793609275160382",
+            "2084958999842240301",
+            "2085221870589175756",
+            "2084557996856702519",
+            "2084589359404160248",
+            "2085206332903371471",
+            "2085285009557026749",
+            "2084435645116704209",
+            "2084588921359438178",
+            "2084586077533348481",
+            "2084553367913874081",
+            "2085103768522306745",
+            "2085155911480391255",
+            "2085096525688993331",
+            "2084940864099455203",
+            "2084533732048892481",
+            "2084644903695529142",
+            "2084580655535595793"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2083930184395372278",
+      "request_uuid": "fd7be982-d6bb-51d5-bc88-69e4d00319fc",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2083981293298120337"
+      ],
+      "ranked_answer_ids": [
+        "2084128941867000616",
+        "2083962023466083012",
+        "2083981293298120337",
+        "2084840029990425608",
+        "2083954228159067114",
+        "2083956102857864309",
+        "2083994471532852831",
+        "2084089494555334043",
+        "2086229020853719871",
+        "2086479493703718536",
+        "2084046963616626486",
+        "2084267249804764725",
+        "2083970771853039322",
+        "2084260815335600778",
+        "2084023575581824809",
+        "2084369927310463968",
+        "2084235491667451992",
+        "2084292257868526549",
+        "2084625484516803039",
+        "2084069055636444508"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 20,
+      "termination": [
+        "limit_reached"
+      ],
+      "collected_at": "2026-09-26T12:23:59.331692+00:00",
+      "evidence": [
+        {
+          "sha256": "7186f809213c88edbf24e4e092e1cd3541c3eb421749101c053b91f2a4d793f1",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2084128941867000616",
+            "2083962023466083012",
+            "2083981293298120337",
+            "2084840029990425608",
+            "2083954228159067114",
+            "2083956102857864309",
+            "2083994471532852831",
+            "2084089494555334043",
+            "2086229020853719871",
+            "2086479493703718536",
+            "2084046963616626486",
+            "2084267249804764725",
+            "2083970771853039322",
+            "2084260815335600778",
+            "2084023575581824809",
+            "2084369927310463968",
+            "2084235491667451992",
+            "2084292257868526549",
+            "2084625484516803039",
+            "2084069055636444508"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2070082903229347029",
+      "request_uuid": "84132c3a-674f-53fd-a882-e4de0fd40e45",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2079835505177449865",
+        "zhihu:answer:2080429491831285188"
+      ],
+      "ranked_answer_ids": [
+        "2074935008586946331",
+        "2082618352946635579",
+        "2079824387059066325",
+        "2080046316101681300",
+        "2073606132837498948",
+        "2080594155672282650",
+        "2070919871358096158",
+        "2070677290485281285",
+        "2079961438777505744",
+        "2079984965832414962",
+        "2070117385089052772",
+        "2080429491831285188",
+        "2080262304344568299",
+        "2079450451251143758",
+        "2070544066064953462",
+        "2070140399281235335",
+        "2079577823891690681",
+        "2079174640224806507",
+        "2081897671040689096",
+        "2079121595466003182"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 20,
+      "termination": [
+        "limit_reached"
+      ],
+      "collected_at": "2026-09-26T12:24:14.679548+00:00",
+      "evidence": [
+        {
+          "sha256": "7d63c352fa1c85e8d4f1d4c3fc3714fa961eb8d7243de665f1a05314a71815f4",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2074935008586946331",
+            "2082618352946635579",
+            "2079824387059066325",
+            "2080046316101681300",
+            "2073606132837498948",
+            "2080594155672282650",
+            "2070919871358096158",
+            "2070677290485281285",
+            "2079961438777505744",
+            "2079984965832414962",
+            "2070117385089052772",
+            "2080429491831285188",
+            "2080262304344568299",
+            "2079450451251143758",
+            "2070544066064953462",
+            "2070140399281235335",
+            "2079577823891690681",
+            "2079174640224806507",
+            "2081897671040689096",
+            "2079121595466003182"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2079863733422142709",
+      "request_uuid": "38e43acb-0aa8-52bf-bcff-7255fcf1804a",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2080832671404528628"
+      ],
+      "ranked_answer_ids": [
+        "2080832671404528628",
+        "2079876972260415164",
+        "2084335411288094201",
+        "2087158102332272776",
+        "2081173187564398245",
+        "2085766026176771991",
+        "2080333515716150327",
+        "2087160566863356317",
+        "2081690620595279285",
+        "2080931302489039778",
+        "2080615193080602770",
+        "2079912200651723415",
+        "2079896875738591446",
+        "2079903430152402154"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 14,
+      "termination": [
+        "end_of_list"
+      ],
+      "collected_at": "2026-09-26T12:24:24.951004+00:00",
+      "evidence": [
+        {
+          "sha256": "c48eeead450bdf9f8740d96f2fa2a92c132516db2beb99c97b979c8b365c4787",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2080832671404528628",
+            "2079876972260415164",
+            "2084335411288094201",
+            "2087158102332272776",
+            "2081173187564398245",
+            "2085766026176771991",
+            "2080333515716150327",
+            "2087160566863356317",
+            "2081690620595279285",
+            "2080931302489039778",
+            "2080615193080602770",
+            "2079912200651723415",
+            "2079896875738591446",
+            "2079903430152402154"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2080482298223399865",
+      "request_uuid": "19268b8c-0cbd-5740-8f5f-6d2de7fea5b2",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2081440955689853967",
+        "zhihu:answer:2084047658369525546"
+      ],
+      "ranked_answer_ids": [
+        "2084647650956153655",
+        "2080627950144186018",
+        "2080969203444606122",
+        "2080638323777975818",
+        "2080954828092616983",
+        "2081540308102275580",
+        "2083246009711435825",
+        "2081295319216796285",
+        "2083633581495169988",
+        "2080935383475532636",
+        "2080807221051635079",
+        "2081195049946182725",
+        "2081418666231470002",
+        "2080993267261429502",
+        "2080618789226420211",
+        "2080978939854452131",
+        "2080974648703981130",
+        "2080971362764591373",
+        "2080699190007668934",
+        "2081017523412248474"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 20,
+      "termination": [
+        "limit_reached"
+      ],
+      "collected_at": "2026-09-26T12:24:35.307663+00:00",
+      "evidence": [
+        {
+          "sha256": "729eaff5094266f20730fb15c50c043e64b33c3d52ddfaaaa900fb0fa00a5f66",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2084647650956153655",
+            "2080627950144186018",
+            "2080969203444606122",
+            "2080638323777975818",
+            "2080954828092616983",
+            "2081540308102275580",
+            "2083246009711435825",
+            "2081295319216796285",
+            "2083633581495169988",
+            "2080935383475532636",
+            "2080807221051635079",
+            "2081195049946182725",
+            "2081418666231470002",
+            "2080993267261429502",
+            "2080618789226420211",
+            "2080978939854452131",
+            "2080974648703981130",
+            "2080971362764591373",
+            "2080699190007668934",
+            "2081017523412248474"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2079099260516184281",
+      "request_uuid": "65915e32-37a0-5c77-b3d1-41eb5166cefb",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2079596330498930392"
+      ],
+      "ranked_answer_ids": [
+        "2079551659110298480",
+        "2079476235793703574",
+        "2080140717167468730",
+        "2079164770553546326",
+        "2079546818250262052",
+        "2079483351879237878",
+        "2079997400207324318",
+        "2079497275819275596",
+        "2079483523052917758",
+        "2085607612373022305",
+        "2079438422117302398",
+        "2079465393383651185",
+        "2080183870415173006",
+        "2079546365118527126",
+        "2079149059772773350",
+        "2079680550433047436",
+        "2079507842877363964",
+        "2080087410805826362",
+        "2085907934698025413",
+        "2080237624149665593"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 20,
+      "termination": [
+        "limit_reached"
+      ],
+      "collected_at": "2026-09-26T12:24:45.682443+00:00",
+      "evidence": [
+        {
+          "sha256": "b79401413161c6223ab2db8e3b5f3a4ba4d67e3e8c042d4d1af34fc03c96499a",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2079551659110298480",
+            "2079476235793703574",
+            "2080140717167468730",
+            "2079164770553546326",
+            "2079546818250262052",
+            "2079483351879237878",
+            "2079997400207324318",
+            "2079497275819275596",
+            "2079483523052917758",
+            "2085607612373022305",
+            "2079438422117302398",
+            "2079465393383651185",
+            "2080183870415173006",
+            "2079546365118527126",
+            "2079149059772773350",
+            "2079680550433047436",
+            "2079507842877363964",
+            "2080087410805826362",
+            "2085907934698025413",
+            "2080237624149665593"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2079054472190469850",
+      "request_uuid": "d2501387-945f-5bb5-95c0-251683869ade",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2079174835666677865",
+        "zhihu:answer:2079086519587976875"
+      ],
+      "ranked_answer_ids": [
+        "2079266089654134744",
+        "2079279488806938562",
+        "2079766520104761001",
+        "2079174835666677865",
+        "2079717779138205220",
+        "2079245559307690414",
+        "2079502464764724522",
+        "2080442612973097596",
+        "2079118482206152021",
+        "2079179970866319537",
+        "2079170844744594908",
+        "2079107049972031944",
+        "2079154305643368689",
+        "2079855838534095086",
+        "2079915564093399743",
+        "2079163146531620186",
+        "2079111395971543384",
+        "2079344166241317486",
+        "2079190399470589183",
+        "2082782757005145249"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 20,
+      "termination": [
+        "limit_reached"
+      ],
+      "collected_at": "2026-09-26T12:24:56.074582+00:00",
+      "evidence": [
+        {
+          "sha256": "fd8857048cb19390dfac9ca29cee1a3e66b9bc3e096ecd5297ae848696038f0d",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2079266089654134744",
+            "2079279488806938562",
+            "2079766520104761001",
+            "2079174835666677865",
+            "2079717779138205220",
+            "2079245559307690414",
+            "2079502464764724522",
+            "2080442612973097596",
+            "2079118482206152021",
+            "2079179970866319537",
+            "2079170844744594908",
+            "2079107049972031944",
+            "2079154305643368689",
+            "2079855838534095086",
+            "2079915564093399743",
+            "2079163146531620186",
+            "2079111395971543384",
+            "2079344166241317486",
+            "2079190399470589183",
+            "2082782757005145249"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2080381381780169114",
+      "request_uuid": "9c256990-bdb6-5b61-ab11-e39c591a0f38",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2080641497368741328"
+      ],
+      "ranked_answer_ids": [
+        "2081831639051780423",
+        "2081539449054311075",
+        "2080696084091908211",
+        "2080641497368741328"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 4,
+      "termination": [
+        "end_of_list"
+      ],
+      "collected_at": "2026-09-26T12:25:06.330676+00:00",
+      "evidence": [
+        {
+          "sha256": "152cf07fac5e3643eff85dbef538965f06f43c21421ea33ecbaccac73aac353d",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2081831639051780423",
+            "2081539449054311075",
+            "2080696084091908211",
+            "2080641497368741328"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2079504201315623051",
+      "request_uuid": "d71c3631-133b-5344-9e29-a80e73c0da87",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2079514838921897638"
+      ],
+      "ranked_answer_ids": [
+        "2079514838921897638"
+      ],
+      "ranks": [
+        1
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 1,
+      "termination": [
+        "end_of_list"
+      ],
+      "collected_at": "2026-09-26T12:25:16.550699+00:00",
+      "evidence": [
+        {
+          "sha256": "1e90cc49f078a287a5ebb96c74c4ca044f0575e728234020a929dbeeb67db2fc",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2079514838921897638"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2081005876551365826",
+      "request_uuid": "6b115819-20a1-58b4-88fa-ebefa4fc9e3d",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2081320769313837762"
+      ],
+      "ranked_answer_ids": [
+        "2081011251854025118",
+        "2081320769313837762",
+        "2081147084560930441",
+        "2081013660089168494",
+        "2081012426309480907",
+        "2081378246772508557",
+        "2081011248737543284",
+        "2082873828057925161"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 8,
+      "termination": [
+        "end_of_list"
+      ],
+      "collected_at": "2026-09-26T12:25:26.831183+00:00",
+      "evidence": [
+        {
+          "sha256": "df73bdb7a5969bdaf5a9437d5ffe4fb962387dce70e0943166c07920edf82b00",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2081011251854025118",
+            "2081320769313837762",
+            "2081147084560930441",
+            "2081013660089168494",
+            "2081012426309480907",
+            "2081378246772508557",
+            "2081011248737543284",
+            "2082873828057925161"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2079153750703456931",
+      "request_uuid": "a5ec6c38-f3d9-5855-b309-ad372ce5af0e",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2079214583731044427"
+      ],
+      "ranked_answer_ids": [
+        "2079206467484266964",
+        "2079164350422635806",
+        "2079214583731044427",
+        "2079171471801313161",
+        "2079210125605204639",
+        "2079230265231153010",
+        "2079306165645849462",
+        "2079413698695898128",
+        "2079342945459762446",
+        "2079227536270276080",
+        "2079167682205708752",
+        "2079160687893426544",
+        "2079251696631420817",
+        "2080024026282464547",
+        "2079216688063583707",
+        "2080645114813212446",
+        "2080619527990257568",
+        "2080595210657182178",
+        "2080229227606164434",
+        "2080059578058814472"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 20,
+      "termination": [
+        "limit_reached"
+      ],
+      "collected_at": "2026-09-26T12:25:37.204745+00:00",
+      "evidence": [
+        {
+          "sha256": "73149a0413e8567a799181b2db956ed729350f5db2c58ab083e22dbc51f1766e",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2079206467484266964",
+            "2079164350422635806",
+            "2079214583731044427",
+            "2079171471801313161",
+            "2079210125605204639",
+            "2079230265231153010",
+            "2079306165645849462",
+            "2079413698695898128",
+            "2079342945459762446",
+            "2079227536270276080",
+            "2079167682205708752",
+            "2079160687893426544",
+            "2079251696631420817",
+            "2080024026282464547",
+            "2079216688063583707",
+            "2080645114813212446",
+            "2080619527990257568",
+            "2080595210657182178",
+            "2080229227606164434",
+            "2080059578058814472"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2079305007262914438",
+      "request_uuid": "6d8e465e-c622-5c3b-91a7-1e560583ffd7",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2081032550777148624",
+        "zhihu:answer:2079531924654126928"
+      ],
+      "ranked_answer_ids": [
+        "2080174861528338740",
+        "2080444761408853907",
+        "2080567181130183381",
+        "2080430335800652910",
+        "2081157994734154524",
+        "2081037378232258653",
+        "2081801296756085056",
+        "2080585063700362990",
+        "2080221015217648004",
+        "2081344292874989665",
+        "2080579323057252091",
+        "2080104368150525168",
+        "2081016732446209920",
+        "2081032550777148624",
+        "2081332607376273824",
+        "2080766081191486949",
+        "2081440289659556681",
+        "2086932539969640384",
+        "2082819005388158336",
+        "2084288933681283626"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 20,
+      "termination": [
+        "limit_reached"
+      ],
+      "collected_at": "2026-09-26T12:25:47.608249+00:00",
+      "evidence": [
+        {
+          "sha256": "88d483de78c794b81d8050802e10f7d806e28f9dccef29ae3d99f53ded8e3bc3",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2080174861528338740",
+            "2080444761408853907",
+            "2080567181130183381",
+            "2080430335800652910",
+            "2081157994734154524",
+            "2081037378232258653",
+            "2081801296756085056",
+            "2080585063700362990",
+            "2080221015217648004",
+            "2081344292874989665",
+            "2080579323057252091",
+            "2080104368150525168",
+            "2081016732446209920",
+            "2081032550777148624",
+            "2081332607376273824",
+            "2080766081191486949",
+            "2081440289659556681",
+            "2086932539969640384",
+            "2082819005388158336",
+            "2084288933681283626"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2081165724622513410",
+      "request_uuid": "be47554a-58cb-59d6-b524-89c71d51305a",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2082444805796258977"
+      ],
+      "ranked_answer_ids": [
+        "2081842132390888775",
+        "2086443835001922054",
+        "2082796010426855844",
+        "2083260309247092116",
+        "2081336543336318075",
+        "2081384348360749740",
+        "2082434957062959398",
+        "2081924840454371107",
+        "2081348986678547779",
+        "2081551108732991291",
+        "2081364990351635963",
+        "2081439717703399129",
+        "2081681124296869681",
+        "2083098722716721412",
+        "2083583411353031540",
+        "2082918951575611082",
+        "2081706643553891335",
+        "2081899298132907557",
+        "2083115737384760414",
+        "2082007108426397564"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 20,
+      "termination": [
+        "limit_reached"
+      ],
+      "collected_at": "2026-09-26T12:25:58.022904+00:00",
+      "evidence": [
+        {
+          "sha256": "eed5b8c1398b6e3f2bb1055781cc4fc848752e5b0cf8c14648e29ec67a28c228",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2081842132390888775",
+            "2086443835001922054",
+            "2082796010426855844",
+            "2083260309247092116",
+            "2081336543336318075",
+            "2081384348360749740",
+            "2082434957062959398",
+            "2081924840454371107",
+            "2081348986678547779",
+            "2081551108732991291",
+            "2081364990351635963",
+            "2081439717703399129",
+            "2081681124296869681",
+            "2083098722716721412",
+            "2083583411353031540",
+            "2082918951575611082",
+            "2081706643553891335",
+            "2081899298132907557",
+            "2083115737384760414",
+            "2082007108426397564"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2079174485035282663",
+      "request_uuid": "3aba09cd-00fb-56d7-bdab-8e57023a4b1c",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2080359017428300386",
+        "zhihu:answer:2080054751614464664"
+      ],
+      "ranked_answer_ids": [
+        "2079952871974507828",
+        "2079731555904374636",
+        "2079343065207157220",
+        "2079270899648354050",
+        "2079214302687503102",
+        "2080054751614464664",
+        "2079713699963715729",
+        "2079642490278355748",
+        "2079217782982558365",
+        "2079541679607002474",
+        "2079665546237305569",
+        "2082223566527934915",
+        "2079972259414929678",
+        "2079206232297042233",
+        "2079231305540166732",
+        "2079988832934572393",
+        "2079552533077431802",
+        "2079682839805686540",
+        "2079915719379136594",
+        "2080241754410952511"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 20,
+      "termination": [
+        "limit_reached"
+      ],
+      "collected_at": "2026-09-26T12:26:08.440571+00:00",
+      "evidence": [
+        {
+          "sha256": "ad8c019310b3c4a3d1e2be8adb579871d9c890fc80c934a3ed2cda6000dcb145",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2079952871974507828",
+            "2079731555904374636",
+            "2079343065207157220",
+            "2079270899648354050",
+            "2079214302687503102",
+            "2080054751614464664",
+            "2079713699963715729",
+            "2079642490278355748",
+            "2079217782982558365",
+            "2079541679607002474",
+            "2079665546237305569",
+            "2082223566527934915",
+            "2079972259414929678",
+            "2079206232297042233",
+            "2079231305540166732",
+            "2079988832934572393",
+            "2079552533077431802",
+            "2079682839805686540",
+            "2079915719379136594",
+            "2080241754410952511"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2081163820538541529",
+      "request_uuid": "52ceac96-edbf-51e7-beff-4f9ba3d68c77",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2083531601279971804"
+      ],
+      "ranked_answer_ids": [
+        "2083531601279971804",
+        "2081328423524382146",
+        "2083895214914250411",
+        "2083587842253517014",
+        "2083701522458845527",
+        "2084348747593544499",
+        "2083207204052780514"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 7,
+      "termination": [
+        "end_of_list"
+      ],
+      "collected_at": "2026-09-26T12:26:18.759915+00:00",
+      "evidence": [
+        {
+          "sha256": "4f3b9ed09ea89189787f19ac5c69034e9ec9e34a438522be1caff122f33ce3ff",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2083531601279971804",
+            "2081328423524382146",
+            "2083895214914250411",
+            "2083587842253517014",
+            "2083701522458845527",
+            "2084348747593544499",
+            "2083207204052780514"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2079055468840990698",
+      "request_uuid": "47067056-4946-5160-9e9a-4680003f4739",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2082778733392443379",
+        "zhihu:answer:2082778007786333110"
+      ],
+      "ranked_answer_ids": [
+        "2082787526985761050",
+        "2082778007786333110",
+        "2082778733392443379",
+        "2080095208901980948",
+        "2080228521545417019",
+        "2079523878511065008",
+        "2082065346698163888",
+        "2079708833753186970",
+        "2080612035772027848",
+        "2079169012043405064",
+        "2079620127809614078",
+        "2079506682959417503",
+        "2080465616327152232",
+        "2084136999687140591",
+        "2079061520533798953",
+        "2080283170293937779",
+        "2079936453459628798",
+        "2079701476264383677",
+        "2079867278800307672",
+        "2079530440084435642"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 20,
+      "termination": [
+        "limit_reached"
+      ],
+      "collected_at": "2026-09-26T12:26:29.243105+00:00",
+      "evidence": [
+        {
+          "sha256": "2bcac97cad52f50c938bf59fe1e71e00408bce682b8712650667acfa80a6404d",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2082787526985761050",
+            "2082778007786333110",
+            "2082778733392443379",
+            "2080095208901980948",
+            "2080228521545417019",
+            "2079523878511065008",
+            "2082065346698163888",
+            "2079708833753186970",
+            "2080612035772027848",
+            "2079169012043405064",
+            "2079620127809614078",
+            "2079506682959417503",
+            "2080465616327152232",
+            "2084136999687140591",
+            "2079061520533798953",
+            "2080283170293937779",
+            "2079936453459628798",
+            "2079701476264383677",
+            "2079867278800307672",
+            "2079530440084435642"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2080789299197384413",
+      "request_uuid": "4e821fd9-bbab-5c0f-8486-fcd7ea4a7222",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2081630539094693178"
+      ],
+      "ranked_answer_ids": [
+        "2081029188207879170",
+        "2081016261551695102",
+        "2080833917037428815",
+        "2081058166528275653",
+        "2081035573347738454",
+        "2082999967476667760",
+        "2081393197197140612",
+        "2081830847351726454",
+        "2081433917911983286",
+        "2081933652716414137",
+        "2081439591618426274",
+        "2081773803273721841",
+        "2081360235353076123",
+        "2082449303725985915",
+        "2080990748623758166",
+        "2081473437348917926",
+        "2083504511239439398",
+        "2081646900579718682",
+        "2081314215856432276",
+        "2081349071445481238"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 20,
+      "termination": [
+        "limit_reached"
+      ],
+      "collected_at": "2026-09-26T12:26:39.708389+00:00",
+      "evidence": [
+        {
+          "sha256": "c6e47025f44990e75c6ca2f5744f81066b92be746456ce26fab929eb211168b5",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2081029188207879170",
+            "2081016261551695102",
+            "2080833917037428815",
+            "2081058166528275653",
+            "2081035573347738454",
+            "2082999967476667760",
+            "2081393197197140612",
+            "2081830847351726454",
+            "2081433917911983286",
+            "2081933652716414137",
+            "2081439591618426274",
+            "2081773803273721841",
+            "2081360235353076123",
+            "2082449303725985915",
+            "2080990748623758166",
+            "2081473437348917926",
+            "2083504511239439398",
+            "2081646900579718682",
+            "2081314215856432276",
+            "2081349071445481238"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2079943307522848016",
+      "request_uuid": "30d0ae1a-e40b-55c9-a512-6b25d0da6174",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2079964179826488560"
+      ],
+      "ranked_answer_ids": [
+        "2079964179826488560"
+      ],
+      "ranks": [
+        1
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 1,
+      "termination": [
+        "end_of_list"
+      ],
+      "collected_at": "2026-09-26T12:26:50.028525+00:00",
+      "evidence": [
+        {
+          "sha256": "622925d34b708f01c43177227ec4112c7d20458fdc91289365659a2106d57eba",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2079964179826488560"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2079875098979448454",
+      "request_uuid": "2bd79aaa-dc5e-5df5-a459-d45fd6226fed",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2080390064916452697"
+      ],
+      "ranked_answer_ids": [
+        "2080390064916452697",
+        "2080323789112468682",
+        "2080650835160195477",
+        "2080710669788246679",
+        "2080771215837471180",
+        "2080649033547360234",
+        "2081344881532916059",
+        "2080621647573341298",
+        "2082985361769230484",
+        "2084083874661979889",
+        "2082957666142394339",
+        "2081503380611113474",
+        "2081188846415386013",
+        "2081165822031049074",
+        "2081141448129376376",
+        "2081069529258639665",
+        "2081036078102979094",
+        "2081031334395372933",
+        "2081025801047361179",
+        "2080942473438826947"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 20,
+      "termination": [
+        "limit_reached"
+      ],
+      "collected_at": "2026-09-26T12:27:00.507889+00:00",
+      "evidence": [
+        {
+          "sha256": "84d9960e8ccadb15defaf4456bc8323ab4e3aa5d4a025663a3d40cfc3d027c5c",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2080390064916452697",
+            "2080323789112468682",
+            "2080650835160195477",
+            "2080710669788246679",
+            "2080771215837471180",
+            "2080649033547360234",
+            "2081344881532916059",
+            "2080621647573341298",
+            "2082985361769230484",
+            "2084083874661979889",
+            "2082957666142394339",
+            "2081503380611113474",
+            "2081188846415386013",
+            "2081165822031049074",
+            "2081141448129376376",
+            "2081069529258639665",
+            "2081036078102979094",
+            "2081031334395372933",
+            "2081025801047361179",
+            "2080942473438826947"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2080205951320248903",
+      "request_uuid": "d5d322f0-7bb4-51a2-82df-36153578b8a1",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2080601390020288548"
+      ],
+      "ranked_answer_ids": [
+        "2080795710958708562",
+        "2080601390020288548",
+        "2080758119894889256",
+        "2080264602038935906",
+        "2083151572918329555",
+        "2080589960244213406",
+        "2080214485160179623",
+        "2080706304927076868",
+        "2080428799863287822",
+        "2080233495151100109"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 10,
+      "termination": [
+        "end_of_list"
+      ],
+      "collected_at": "2026-09-26T12:27:10.938141+00:00",
+      "evidence": [
+        {
+          "sha256": "1cd1f2bd01135c00f1f53c1489595d50c4122c30c7d0c75f7a4c2535d58b1c4c",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2080795710958708562",
+            "2080601390020288548",
+            "2080758119894889256",
+            "2080264602038935906",
+            "2083151572918329555",
+            "2080589960244213406",
+            "2080214485160179623",
+            "2080706304927076868",
+            "2080428799863287822",
+            "2080233495151100109"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2083530392129233922",
+      "request_uuid": "19a88f23-1c4f-5711-b9e0-118461d800c5",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2083925275553818045",
+        "zhihu:answer:2084042592698766636"
+      ],
+      "ranked_answer_ids": [
+        "2084042592698766636",
+        "2083926639474373240",
+        "2083597454814061977",
+        "2083904467682981283",
+        "2083949497529455038",
+        "2084048716789560268",
+        "2083631618397299375",
+        "2083921737914364608",
+        "2083601197957658593",
+        "2083661283103085425",
+        "2083562400045873122",
+        "2083573156455912657",
+        "2084322034541131563",
+        "2083946277574815983",
+        "2083925275553818045",
+        "2083629441889191476",
+        "2083937861926123326",
+        "2083616816883156937",
+        "2083620930736109316",
+        "2083601236222334568"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 20,
+      "termination": [
+        "limit_reached"
+      ],
+      "collected_at": "2026-09-26T12:27:21.438988+00:00",
+      "evidence": [
+        {
+          "sha256": "4e1f25f70c74db800a597d826e84e1dd4cb5da78cb6da084ea6b0f4733be48e2",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2084042592698766636",
+            "2083926639474373240",
+            "2083597454814061977",
+            "2083904467682981283",
+            "2083949497529455038",
+            "2084048716789560268",
+            "2083631618397299375",
+            "2083921737914364608",
+            "2083601197957658593",
+            "2083661283103085425",
+            "2083562400045873122",
+            "2083573156455912657",
+            "2084322034541131563",
+            "2083946277574815983",
+            "2083925275553818045",
+            "2083629441889191476",
+            "2083937861926123326",
+            "2083616816883156937",
+            "2083620930736109316",
+            "2083601236222334568"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2082760330015516304",
+      "request_uuid": "169166e2-9420-5881-aa81-7dfa488fafa6",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2083575600934143306"
+      ],
+      "ranked_answer_ids": [
+        "2083999912887317147",
+        "2083820736343455056",
+        "2083575600934143306"
+      ],
+      "ranks": [
+        1,
+        2,
+        3
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 3,
+      "termination": [
+        "end_of_list"
+      ],
+      "collected_at": "2026-09-26T12:27:31.848956+00:00",
+      "evidence": [
+        {
+          "sha256": "aece30fa95de38bc616cae364ecc15521ae8e2f3dd009f090a1b75c32cdd81d8",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2083999912887317147",
+            "2083820736343455056",
+            "2083575600934143306"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2078051445073506692",
+      "request_uuid": "002d85fa-0f74-5256-af97-21b5ea273b83",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2078607416799802983",
+        "zhihu:answer:2078144928190936123"
+      ],
+      "ranked_answer_ids": [
+        "2078279558743312179",
+        "2078611213873948178",
+        "2078144928190936123",
+        "2078568972128106082",
+        "2080278024088466403",
+        "2079174757413558165",
+        "2078982260544517684",
+        "2078901450537808262",
+        "2078706018310152371",
+        "2078659306921129661",
+        "2078607416799802983",
+        "2078543437175984862",
+        "2078233025188459219",
+        "2078805004119446231",
+        "2078414161550250299",
+        "2078772635526341328"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 16,
+      "termination": [
+        "end_of_list"
+      ],
+      "collected_at": "2026-09-26T12:27:42.338079+00:00",
+      "evidence": [
+        {
+          "sha256": "ee419a00a0f996dd1e8663d796017b127209423ec732831860644daf7faf1b01",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2078279558743312179",
+            "2078611213873948178",
+            "2078144928190936123",
+            "2078568972128106082",
+            "2080278024088466403",
+            "2079174757413558165",
+            "2078982260544517684",
+            "2078901450537808262",
+            "2078706018310152371",
+            "2078659306921129661",
+            "2078607416799802983",
+            "2078543437175984862",
+            "2078233025188459219",
+            "2078805004119446231",
+            "2078414161550250299",
+            "2078772635526341328"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2070445459840000945",
+      "request_uuid": "3e59e9b3-68cf-5674-bb5a-82c9368f597b",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2070524093426841034"
+      ],
+      "ranked_answer_ids": [
+        "2070451085307803516",
+        "2070664178545832744",
+        "2070778255838286705",
+        "2070579329478742426",
+        "2070830663364825955",
+        "2070526101454059447",
+        "2070834155252929693",
+        "2070935674442737050",
+        "2070613263436478331",
+        "2073491115626455995",
+        "2070524093426841034",
+        "2070563403286964163",
+        "2070813069173862956",
+        "2070809911718683393",
+        "2070960949448684040",
+        "2070950230342874734",
+        "2080695962465465185",
+        "2070498805750010610",
+        "2070910420186144932",
+        "2070852883801699214"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 20,
+      "termination": [
+        "limit_reached"
+      ],
+      "collected_at": "2026-09-26T12:27:52.871211+00:00",
+      "evidence": [
+        {
+          "sha256": "3a2a7633c6abab6f216db366a6ba7b3a8f083d7f20b4b25f53cc7a9f673757b2",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2070451085307803516",
+            "2070664178545832744",
+            "2070778255838286705",
+            "2070579329478742426",
+            "2070830663364825955",
+            "2070526101454059447",
+            "2070834155252929693",
+            "2070935674442737050",
+            "2070613263436478331",
+            "2073491115626455995",
+            "2070524093426841034",
+            "2070563403286964163",
+            "2070813069173862956",
+            "2070809911718683393",
+            "2070960949448684040",
+            "2070950230342874734",
+            "2080695962465465185",
+            "2070498805750010610",
+            "2070910420186144932",
+            "2070852883801699214"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2080454426465153737",
+      "request_uuid": "b676546e-9f53-5a52-919c-5effc66de2f9",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2080471912623379404"
+      ],
+      "ranked_answer_ids": [
+        "2080471912623379404"
+      ],
+      "ranks": [
+        1
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 1,
+      "termination": [
+        "end_of_list"
+      ],
+      "collected_at": "2026-09-26T12:28:03.254855+00:00",
+      "evidence": [
+        {
+          "sha256": "7e1e85ea79263f186c8f96e7e750ffb6f7e9bbf992135736747a8f458a611962",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2080471912623379404"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2026939663219181045",
+      "request_uuid": "cf44423a-847f-57e3-b88b-8c64a4eba610",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2027845859115542375"
+      ],
+      "ranked_answer_ids": [
+        "2027845859115542375",
+        "2027802524460020108",
+        "2027163126936741516",
+        "2027321118130750177",
+        "2027327283996705383",
+        "2027469698653013685",
+        "2027328870248977207",
+        "2028008547611418957",
+        "2027575256492119705",
+        "2027618928709449596",
+        "2027136152537240187",
+        "2027456960593765571",
+        "2028885225376063924",
+        "2065089767528722691",
+        "2027869210114532002",
+        "2027511603151610960",
+        "2080194026410612644",
+        "2038291857969500643",
+        "2027382874219783861",
+        "2028763791685369970"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 20,
+      "termination": [
+        "limit_reached"
+      ],
+      "collected_at": "2026-09-26T12:28:13.762348+00:00",
+      "evidence": [
+        {
+          "sha256": "1e003e5c8e0ddc5c0a22a5b7f1ef2fb223c339d8844e0ec65854ffbc5f350e0f",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2027845859115542375",
+            "2027802524460020108",
+            "2027163126936741516",
+            "2027321118130750177",
+            "2027327283996705383",
+            "2027469698653013685",
+            "2027328870248977207",
+            "2028008547611418957",
+            "2027575256492119705",
+            "2027618928709449596",
+            "2027136152537240187",
+            "2027456960593765571",
+            "2028885225376063924",
+            "2065089767528722691",
+            "2027869210114532002",
+            "2027511603151610960",
+            "2080194026410612644",
+            "2038291857969500643",
+            "2027382874219783861",
+            "2028763791685369970"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2080234853623140779",
+      "request_uuid": "930ac238-1e0b-51aa-81c2-f2310cfb867e",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2080238395876558688"
+      ],
+      "ranked_answer_ids": [
+        "2080238395876558688",
+        "2084327271343694995"
+      ],
+      "ranks": [
+        1,
+        2
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 2,
+      "termination": [
+        "end_of_list"
+      ],
+      "collected_at": "2026-09-26T12:28:24.223686+00:00",
+      "evidence": [
+        {
+          "sha256": "d358c6fda299ab2d01a727f8cde2afcb7055a900424ad5a8204622688fc081c3",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2080238395876558688",
+            "2084327271343694995"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2081189340986844931",
+      "request_uuid": "3279a7dc-72ae-5f7c-8e6e-e1e00111d686",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2081411494877709305"
+      ],
+      "ranked_answer_ids": [
+        "2081411494877709305"
+      ],
+      "ranks": [
+        1
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 1,
+      "termination": [
+        "end_of_list"
+      ],
+      "collected_at": "2026-09-26T12:28:34.661054+00:00",
+      "evidence": [
+        {
+          "sha256": "62a722f96acb500dc7b7b70f4a6cc5ddc8f3a5339d68a9e7f822562265f66bda",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2081411494877709305"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2079666454430072866",
+      "request_uuid": "a6cb1849-1c3d-55ef-8d1f-054baa6333af",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2080694095480099795"
+      ],
+      "ranked_answer_ids": [
+        "2080596628449378461",
+        "2079802350189933183",
+        "2080727582803284733",
+        "2079960880733802692",
+        "2079732517800776155",
+        "2079676287333962757",
+        "2080694095480099795",
+        "2079711484167438641",
+        "2079724626008086323",
+        "2079900562867349270",
+        "2080116888412099074",
+        "2079804503101129561",
+        "2079803164149167218",
+        "2079703515837084696",
+        "2080343878427853729",
+        "2080419502165070108",
+        "2079880687876845740",
+        "2083631537061471496",
+        "2081050451726821372",
+        "2080082306887317201"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 20,
+      "termination": [
+        "limit_reached"
+      ],
+      "collected_at": "2026-09-26T12:28:45.210193+00:00",
+      "evidence": [
+        {
+          "sha256": "a8538ea370480a4f90aaae1a290da5d08b2329707251f004f6fa4ef2378186e3",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2080596628449378461",
+            "2079802350189933183",
+            "2080727582803284733",
+            "2079960880733802692",
+            "2079732517800776155",
+            "2079676287333962757",
+            "2080694095480099795",
+            "2079711484167438641",
+            "2079724626008086323",
+            "2079900562867349270",
+            "2080116888412099074",
+            "2079804503101129561",
+            "2079803164149167218",
+            "2079703515837084696",
+            "2080343878427853729",
+            "2080419502165070108",
+            "2079880687876845740",
+            "2083631537061471496",
+            "2081050451726821372",
+            "2080082306887317201"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2079848471813797681",
+      "request_uuid": "a57c59b5-e6ab-5efb-a9fd-3a77081ece67",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2079892652833690389"
+      ],
+      "ranked_answer_ids": [
+        "2079924538876375660",
+        "2079892652833690389",
+        "2079882316252440213"
+      ],
+      "ranks": [
+        1,
+        2,
+        3
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 3,
+      "termination": [
+        "end_of_list"
+      ],
+      "collected_at": "2026-09-26T12:28:55.726404+00:00",
+      "evidence": [
+        {
+          "sha256": "0b7572412c9a403d58971749e590a3b39352b91f21e102c7aac8de09a1d9e011",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2079924538876375660",
+            "2079892652833690389",
+            "2079882316252440213"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2080336745191817631",
+      "request_uuid": "4449f817-fa68-50ea-82e6-714f76709275",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2080785869670303499"
+      ],
+      "ranked_answer_ids": [
+        "2084541606837995034",
+        "2081670160008615129",
+        "2080340423004906144",
+        "2080446973786722578",
+        "2080785869670303499",
+        "2080362871163184090",
+        "2083251007983829128",
+        "2080363941268559478",
+        "2080369495114244559",
+        "2080438110161262275",
+        "2082044470858610202",
+        "2081537939599779472",
+        "2081652231204612042",
+        "2082655393822593562",
+        "2080399336077256378",
+        "2081685472716367334",
+        "2083205992855222224",
+        "2081679387884369188",
+        "2081780320534378472",
+        "2081561399986231163"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 20,
+      "termination": [
+        "limit_reached"
+      ],
+      "collected_at": "2026-09-26T12:29:06.297142+00:00",
+      "evidence": [
+        {
+          "sha256": "8eeeb5824245a230ece1828eb260ff632b84156ec2653743fa3c546979f3cd08",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2084541606837995034",
+            "2081670160008615129",
+            "2080340423004906144",
+            "2080446973786722578",
+            "2080785869670303499",
+            "2080362871163184090",
+            "2083251007983829128",
+            "2080363941268559478",
+            "2080369495114244559",
+            "2080438110161262275",
+            "2082044470858610202",
+            "2081537939599779472",
+            "2081652231204612042",
+            "2082655393822593562",
+            "2080399336077256378",
+            "2081685472716367334",
+            "2083205992855222224",
+            "2081679387884369188",
+            "2081780320534378472",
+            "2081561399986231163"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2083571384953696657",
+      "request_uuid": "4bfe0488-68be-5f59-8b6f-c147735dc8a5",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2084278623637451587"
+      ],
+      "ranked_answer_ids": [
+        "2083593479561782926",
+        "2083589956489032771",
+        "2083925194679361712",
+        "2083610156311622835",
+        "2083677012732949459",
+        "2083852987445809765",
+        "2083878669781680909",
+        "2083606968812545655",
+        "2083651995764900060",
+        "2085993994278921381",
+        "2084278623637451587",
+        "2084278520956580631"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 12,
+      "termination": [
+        "end_of_list"
+      ],
+      "collected_at": "2026-09-26T12:29:16.856913+00:00",
+      "evidence": [
+        {
+          "sha256": "b849f85f65ecfba366d7ec2e72c3f3d4e06d298708c84fef8e188beee04a0d38",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2083593479561782926",
+            "2083589956489032771",
+            "2083925194679361712",
+            "2083610156311622835",
+            "2083677012732949459",
+            "2083852987445809765",
+            "2083878669781680909",
+            "2083606968812545655",
+            "2083651995764900060",
+            "2085993994278921381",
+            "2084278623637451587",
+            "2084278520956580631"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2081188018577203984",
+      "request_uuid": "9bf13a2b-e1d3-539a-a2ae-8ce05466c372",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2084247649516110185"
+      ],
+      "ranked_answer_ids": [
+        "2085129258356290211",
+        "2084247649516110185",
+        "2081190776080549483",
+        "2082894969933664349"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 4,
+      "termination": [
+        "end_of_list"
+      ],
+      "collected_at": "2026-09-26T12:29:27.312028+00:00",
+      "evidence": [
+        {
+          "sha256": "e43c53aa5e5d737d61917436668cbf23bc7dfde1a87a4a462993326d3119eb76",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2085129258356290211",
+            "2084247649516110185",
+            "2081190776080549483",
+            "2082894969933664349"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2083661972118291726",
+      "request_uuid": "5cf599ec-37f5-525a-a3bd-b58e30210fba",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2083868384924639549"
+      ],
+      "ranked_answer_ids": [
+        "2083868384924639549",
+        "2084933418400346974",
+        "2084973252649271348"
+      ],
+      "ranks": [
+        1,
+        2,
+        3
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 3,
+      "termination": [
+        "end_of_list"
+      ],
+      "collected_at": "2026-09-26T12:29:37.755535+00:00",
+      "evidence": [
+        {
+          "sha256": "b81ede4d4ffb3d008bd1c66e1edef3ac478bf97def65172bdb2ad50b82f5c872",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2083868384924639549",
+            "2084933418400346974",
+            "2084973252649271348"
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2082509112374452378",
+      "request_uuid": "0db63c87-aad0-544d-820e-6df57b07021d",
+      "stable_request_uuid_matches": true,
+      "status": "completed",
+      "seed_keys": [
+        "zhihu:answer:2083162104597570281"
+      ],
+      "ranked_answer_ids": [
+        "2083696619900487527",
+        "2082862047533049207",
+        "2085526304124945504",
+        "2085523018613256628",
+        "2084968332030232441",
+        "2084638698893730451",
+        "2084411545061176875",
+        "2083717251660887396",
+        "2083162104597570281",
+        "2082561123140817235"
+      ],
+      "ranks": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "raw_default_order_matches": true,
+      "ranks_contiguous": true,
+      "actual_count": 10,
+      "termination": [
+        "end_of_list"
+      ],
+      "collected_at": "2026-09-26T12:29:48.231096+00:00",
+      "evidence": [
+        {
+          "sha256": "e42bdf19301baa45db5a52ab32abf8537fc9ab6a0759cb84b39c8b0baf4afa4b",
+          "sha256_matches": true,
+          "page_answer_ids": [
+            "2083696619900487527",
+            "2082862047533049207",
+            "2085526304124945504",
+            "2085523018613256628",
+            "2084968332030232441",
+            "2084638698893730451",
+            "2084411545061176875",
+            "2083717251660887396",
+            "2083162104597570281",
+            "2082561123140817235"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -83,6 +83,18 @@ def validate_article(article: dict) -> dict:
         raise ConfigError("只允许内容 ID 一致的知乎单篇回答/专栏链接，问题页不能评分")
     if article["status"] not in STATUSES or not article["title"].strip():
         raise ConfigError("无效的获取状态或空标题")
+    question_id = article.get("question_id", "")
+    if question_id and (
+        not isinstance(question_id, str)
+        or not question_id.isascii()
+        or not question_id.isdigit()
+    ):
+        raise ConfigError("question_id 必须为数字字符串")
+    question_match = re.match(r"/question/([0-9]+)/answer/", url.path)
+    if question_match:
+        if question_id and question_id != question_match[1]:
+            raise ConfigError("question_id 与回答链接不一致")
+        question_id = question_match[1]
     stamp = datetime.fromisoformat(article["fetched_at"])
     if stamp.tzinfo is None:
         raise ConfigError("fetched_at 必须带时区")
@@ -110,6 +122,7 @@ def validate_article(article: dict) -> dict:
         raise ConfigError("缺少 raw_files 原始采集证据路径")
     return {
         **article,
+        "question_id": question_id if article["content_type"] == "answer" else "",
         "article_key": f"zhihu:{article['content_type']}:{article['content_id']}",
         "source": "知乎",
     }

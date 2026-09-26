@@ -1,0 +1,42 @@
+{
+  "before": {
+    "scan_id": "a9c1d18e-f652-5119-a6e5-b9b559c2a7da",
+    "status": "running",
+    "seeds": 99,
+    "candidates": 216,
+    "question_count": 46,
+    "completed_questions": [
+      "2085920963540140700",
+      "2019879356315476336",
+      "2077759364111386075",
+      "2086021602219770414",
+      "2085927666914432329",
+      "2085923908427986610",
+      "2086024321986839369",
+      "2085925368972698066",
+      "2082494001488343797"
+    ],
+    "active": {
+      "collector_id": "5f1279db-ddba-421f-82b0-bc14d66b6fe6",
+      "label": "question:2083895373177931200"
+    },
+    "request_uuid": "db5607bd-c0fb-5a77-9550-02e1326e5c19"
+  },
+  "after": {
+    "scan_id": "a9c1d18e-f652-5119-a6e5-b9b559c2a7da",
+    "status": "running",
+    "seeds": 99,
+    "questions": 46,
+    "expansions": {
+      "completed": 16,
+      "pending": 30
+    },
+    "candidates": 339,
+    "bodies": 110,
+    "active": {},
+    "last_error": null
+  },
+  "same_scan": true,
+  "original_collector_task_preserved": true,
+  "completed_lists_preserved": true
+}
