@@ -2,7 +2,6 @@
 
 import json
 import time
-import uuid
 from contextlib import closing
 from pathlib import Path
 
@@ -10,8 +9,6 @@ from .config import ConfigError, resolve_feishu_delivery
 from .database import connect, transaction
 from .locking import RunLockedError, sender_lock
 from .notifier import FeishuNotifier, NotificationError
-from .rules import Rules
-from .zhihu_verify import evaluate_article, validate_evidence
 
 SCHEMA = """CREATE TABLE IF NOT EXISTS zhihu_link_deliveries (
     position INTEGER PRIMARY KEY,
@@ -23,12 +20,13 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS zhihu_link_deliveries (
     attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts BETWEEN 0 AND 3),
     retry_at REAL NOT NULL DEFAULT 0,
     last_error TEXT NOT NULL DEFAULT '', message_id TEXT,
-    delivered_at REAL
+    delivered_at REAL, message_type TEXT NOT NULL DEFAULT 'interactive',
+    card_json TEXT, snapshot_id INTEGER REFERENCES zhihu_content_snapshots(snapshot_id)
 )"""
 
 
 def initialize(database):
-    """Caller owns sender lock. Back up existing state before enabling the new table."""
+    """Caller owns sender lock. Initialize the current delivery schema."""
     path = Path(database)
     path.parent.mkdir(parents=True, exist_ok=True)
     with closing(connect(path)) as conn:
@@ -36,144 +34,12 @@ def initialize(database):
             "SELECT 1 FROM sqlite_master WHERE name='zhihu_link_deliveries'"
         ).fetchone():
             return
-        if conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1"
-        ).fetchone():
-            backup = path.with_name(
-                f"{path.stem}-before-links-{time.time_ns()}.sqlite3"
-            )
-            with closing(connect(backup)) as destination:
-                conn.backup(destination)
-                if destination.execute("PRAGMA integrity_check").fetchall() != [
-                    ("ok",)
-                ]:
-                    raise ConfigError("迁移备份完整性检查失败")
         with conn:
             conn.execute("""CREATE TABLE IF NOT EXISTS zhihu_scans (
                 id TEXT PRIMARY KEY, created_at TEXT NOT NULL,
                 status TEXT NOT NULL, state_json TEXT NOT NULL
             )""")
             conn.execute(SCHEMA)
-
-
-def register(database, state):
-    """Reconcile saved bodies after crashes, preserving discovery order and quota."""
-    if not state.get("auto_notify"):
-        return 0
-    if state.get("schema_version") == 2:
-        return _register_topic(database, state)
-    rules = Rules.load(state["config"]["rules"])
-    with transaction(database) as conn:
-        count = conn.execute(
-            "SELECT count(*) FROM zhihu_link_deliveries WHERE scan_id=?", (state["id"],)
-        ).fetchone()[0]
-        legacy = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE name='rule_test_deliveries'"
-        ).fetchone()
-        records = sorted(
-            state["records"],
-            key=lambda a: (
-                a["first_discovery"]["query_index"],
-                a["first_discovery"]["result_index"],
-            ),
-        )
-        for article in records:
-            if count >= state["config"]["scan"]["max_results"]:
-                break
-            if not evaluate_article(article, rules)["eligible"]:
-                continue
-            key = article["article_key"]
-            if (
-                legacy
-                and conn.execute(
-                    "SELECT 1 FROM rule_test_deliveries WHERE article_key=? AND status='delivered'",
-                    (key,),
-                ).fetchone()
-            ):
-                continue
-            if conn.execute(
-                "SELECT 1 FROM zhihu_link_deliveries WHERE article_key=?", (key,)
-            ).fetchone():
-                continue
-            validate_evidence(Path(state["directory"]), article)
-            conn.execute(
-                """INSERT INTO zhihu_link_deliveries
-                (article_key,scan_id,title,url,chat_id,send_uuid) VALUES (?,?,?,?,?,?)""",
-                (
-                    key,
-                    state["id"],
-                    article["title"],
-                    article["url"],
-                    state["chat_id"],
-                    str(uuid.uuid4()),
-                ),
-            )
-            count += 1
-    return count
-
-
-def _register_topic(database, state):
-    from .config import load_config
-    from .zhihu_cards import build_content_card
-    from .zhihu_store import latest_feedback
-
-    if state["status"] not in {"completed", "partial_failed"}:
-        return 0
-    records = {a["article_key"]: a for a in state["records"]}
-    limit = state["config"]["scan"]["max_results"]
-    max_payload_bytes = load_config().feishu.max_payload_bytes
-    with transaction(database) as conn:
-        count = conn.execute(
-            "SELECT count(*) FROM zhihu_link_deliveries WHERE scan_id=? AND message_type!='interactive_review'",
-            (state["id"],),
-        ).fetchone()[0]
-        legacy = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE name='rule_test_deliveries'"
-        ).fetchone()
-        for key in state["selected_keys"]:
-            if count >= limit:
-                break
-            if conn.execute(
-                "SELECT 1 FROM zhihu_link_deliveries WHERE article_key=?", (key,)
-            ).fetchone():
-                continue
-            if (
-                legacy
-                and conn.execute(
-                    "SELECT 1 FROM rule_test_deliveries WHERE article_key=? AND status='delivered'",
-                    (key,),
-                ).fetchone()
-            ):
-                continue
-            article = records[key]
-            validate_evidence(Path(state["directory"]), article)
-            card_json = json.dumps(
-                build_content_card(
-                    article,
-                    snapshot_id=article["snapshot_id"],
-                    max_payload_bytes=max_payload_bytes,
-                    feedback=latest_feedback(database, key),
-                    learning=state["learning"],
-                ),
-                ensure_ascii=False,
-            )
-            conn.execute(
-                """INSERT INTO zhihu_link_deliveries
-                (article_key,scan_id,title,url,chat_id,send_uuid,message_type,card_json,snapshot_id)
-                VALUES (?,?,?,?,?,?,'interactive',?,?)""",
-                (
-                    key,
-                    state["id"],
-                    article["title"],
-                    article["url"],
-                    state["chat_id"],
-                    str(uuid.uuid5(uuid.UUID(state["id"]), "deliver:" + key)),
-                    card_json,
-                    article["snapshot_id"],
-                ),
-            )
-            count += 1
-    return count
 
 
 def delivery_summary(database, scan_id):
@@ -221,6 +87,12 @@ def _recover(database):
             ORDER BY position""").fetchall()
     for row in rows:
         row = dict(row)
+        # A user stop holds even previously registered messages; their stable
+        # identities remain reserved and explicit continuation releases them.
+        from .zhihu_semantic_scan import stop_requested
+
+        if stop_requested(database, row["scan_id"]):
+            continue
         if row["retry_at"] > time.time():
             continue
         if row["attempts"] >= 3:

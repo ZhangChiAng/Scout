@@ -379,10 +379,20 @@ class CodexRuntime:
         schema: dict[str, object],
         instructions: str,
         payload: dict[str, object],
+        telemetry: dict | None = None,
     ) -> dict[str, object]:
         async with self._request_lock:
             started = time.monotonic()
             outcome = "failed"
+            metrics = telemetry if telemetry is not None else {}
+            metrics.update(
+                model=self.model,
+                reasoning_effort=self.reasoning_effort,
+                service_tier="priority",
+                speed="fast",
+                calls=0,
+                token_usage=None,
+            )
             try:
                 async with asyncio.timeout(MODEL_TIMEOUT_SECONDS):
                     client = await self._ready()
@@ -429,8 +439,9 @@ class CodexRuntime:
                             "serviceTierForTurn": "priority",
                         },
                     )
+                    metrics["calls"] = 1
                     self._turn = (thread.thread.id, turn.turn.id)
-                    output = await self._collect(client, turn.turn.id)
+                    output = await self._collect(client, turn.turn.id, metrics)
                     self._turn = None
                     try:
                         data = json.loads(output)
@@ -458,6 +469,10 @@ class CodexRuntime:
                     raise
                 raise error from exc
             finally:
+                metrics.update(
+                    duration_seconds=round(time.monotonic() - started, 3),
+                    outcome=outcome,
+                )
                 LOGGER.info(
                     "Codex request=%s model=%s reasoning_effort=%s speed=fast duration=%.2fs outcome=%s",
                     name,
@@ -467,7 +482,9 @@ class CodexRuntime:
                     outcome,
                 )
 
-    async def _collect(self, client: AsyncCodexClient, turn_id: str) -> str:
+    async def _collect(
+        self, client: AsyncCodexClient, turn_id: str, telemetry: dict
+    ) -> str:
         items = {}
         allowed = {"userMessage", "agentMessage", "reasoning"}
         try:
@@ -484,7 +501,8 @@ class CodexRuntime:
                         items[item.id] = item
                 elif event.method == "thread/tokenUsage/updated":
                     usage = value.token_usage.total
-                    LOGGER.info("Codex token usage: %s", usage.model_dump(mode="json"))
+                    telemetry["token_usage"] = usage.model_dump(mode="json")
+                    LOGGER.info("Codex token usage: %s", telemetry["token_usage"])
                 elif event.method == "turn/completed":
                     if value.turn.error is not None:
                         raise model_error(value.turn.error)

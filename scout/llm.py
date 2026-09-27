@@ -189,14 +189,18 @@ class ModelConfig:
 
 def load_required_model_config(
     path: str | Path = "models.toml",
+    *,
+    section: str = "model",
 ) -> ModelConfig:
     config_path = Path(path)
     if not config_path.exists():
         raise ConfigError(f"models config is required: {config_path}")
-    return load_models_config(config_path)
+    return load_models_config(config_path, section=section)
 
 
-def load_models_config(path: str | Path = "models.toml") -> ModelConfig:
+def load_models_config(
+    path: str | Path = "models.toml", *, section: str = "model"
+) -> ModelConfig:
     config_path = Path(path)
     try:
         with config_path.open("rb") as file:
@@ -206,29 +210,34 @@ def load_models_config(path: str | Path = "models.toml") -> ModelConfig:
             f"cannot load models config {config_path}: {type(exc).__name__}"
         ) from exc
 
-    model_raw = raw.get("model")
+    if section not in {"model", "zhihu_relevance"}:
+        raise ConfigError(f"unknown model config section: {section}")
+    if set(raw) - {"model", "zhihu_relevance"} or "model" not in raw:
+        raise ConfigError("use [model] and optional [zhihu_relevance]")
+    model_raw = raw.get(section)
+    if section == "zhihu_relevance" and model_raw is None:
+        return ModelConfig("gpt-6-luna", "medium")
     if isinstance(model_raw, dict) and "base_url" in model_raw:
         raise ConfigError(
-            "model.base_url is no longer supported; use [model] with "
+            f"{section}.base_url is no longer supported; use [model] with "
             'model = "gpt-6-sol" and reasoning_effort = "medium", then run '
             "uv run --locked python -m scout.auth login"
         )
     if (
-        set(raw) != {"model"}
-        or not isinstance(model_raw, dict)
+        not isinstance(model_raw, dict)
         or "model" not in model_raw
         or set(model_raw) - {"model", "reasoning_effort"}
     ):
-        raise ConfigError("use [model] with model and optional reasoning_effort")
+        raise ConfigError(f"use [{section}] with model and optional reasoning_effort")
     effort = _nonempty_string(
-        model_raw.get("reasoning_effort", "medium"), "model.reasoning_effort"
+        model_raw.get("reasoning_effort", "medium"), f"{section}.reasoning_effort"
     )
     if effort not in REASONING_EFFORTS:
         raise ConfigError(
-            "model.reasoning_effort must be none, low, medium, high, xhigh, or max"
+            f"{section}.reasoning_effort must be none, low, medium, high, xhigh, or max"
         )
     return ModelConfig(
-        _nonempty_string(model_raw["model"], "model.model"),
+        _nonempty_string(model_raw["model"], f"{section}.model"),
         effort,
     )
 

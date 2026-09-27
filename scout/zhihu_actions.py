@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import uuid
 from collections.abc import Callable
 from contextlib import closing
 from datetime import datetime
@@ -13,11 +15,15 @@ from .database import connect
 from .storage import FeedbackError
 from .zhihu_cards import (
     FILTERED_PER_PAGE,
+    TRIAL_PARAMETERS,
+    build_append_form_card,
+    build_batch_summary_card,
     build_content_card,
-    build_dislike_form_card,
+    build_feedback_form_card,
     build_filtered_card,
     build_management_card,
-    build_schedule_card,
+    build_parameter_form_card,
+    build_pending_card,
     build_topic_form_card,
 )
 
@@ -31,9 +37,18 @@ KNOWN_ACTIONS = {
     "zhihu_schedule_save",
     "zhihu_schedule_disable",
     "zhihu_scan",
+    "zhihu_scan_status",
+    "zhihu_scan_pending",
+    "zhihu_scan_continue",
+    "zhihu_scan_append",
+    "zhihu_scan_append_submit",
+    "zhihu_scan_parameters",
+    "zhihu_scan_parameters_submit",
+    "zhihu_scan_stop",
     "zhihu_filtered",
     "zhihu_review",
     "zhihu_like",
+    "zhihu_like_submit",
     "zhihu_dislike",
     "zhihu_dislike_submit",
     "zhihu_feedback_edit",
@@ -45,6 +60,19 @@ STATUS_LABELS = {
     "completed": "已完成",
     "partial_failed": "部分失败，覆盖不完整",
     "failed": "失败",
+    "waiting_user": "等待本批反馈与明确继续",
+    "waiting_preference": "等待最新反馈生效",
+    "paused": "已暂停",
+    "stopped": "本轮已结束",
+    "exhausted": "结果实际耗尽",
+    "waiting_model": "等待模型空闲",
+    "model_busy": "等待模型空闲",
+    "stopping": "正在停止",
+    "cancelled": "已取消",
+    "model_failed": "模型失败",
+    "collector_failed": "采集失败",
+    "processing_failed": "处理异常",
+    "delivery_failed": "发送失败",
 }
 
 
@@ -93,8 +121,24 @@ class ZhihuActionHandler:
         self.wake = wake or (lambda: None)
 
     def management_card(self, offset: int = 0) -> dict:
+        topics = zhihu_store.list_topics(self.database_path)
+        with closing(
+            connect(self.database_path, read_only=True, rows=True, timeout=0.3)
+        ) as conn:
+            for topic in topics:
+                row = conn.execute(
+                    """SELECT id,json_extract(state_json,'$.query_plan') AS plan
+                    FROM zhihu_scans
+                    WHERE json_extract(state_json,'$.schema_version')=3
+                    AND json_extract(state_json,'$.topic.id')=?
+                    ORDER BY created_at DESC LIMIT 1""",
+                    (topic["id"],),
+                ).fetchone()
+                if row:
+                    topic["latest_scan_id"] = row["id"]
+                    topic["latest_query_plan"] = json.loads(row["plan"] or "[]")
         return build_management_card(
-            zhihu_store.list_topics(self.database_path),
+            topics,
             zhihu_store.get_schedule(self.database_path),
             zhihu_learning.snapshot(self.database_path),
             offset=offset,
@@ -188,18 +232,25 @@ class ZhihuActionHandler:
         if action == "zhihu_topic_save":
             self._require_event(event_id)
             topic = self._topic(value) if value.get("topic_id") is not None else None
-            zhihu_store.save_topic(
+            saved = zhihu_store.save_topic(
                 database,
                 name=_field(form, "name"),
-                search_terms=_field(form, "search_terms"),
-                time_range=_field(form, "time_range") or "30d",
+                description=_field(form, "description"),
+                time_range="30d",
                 topic_id=topic["id"] if topic else None,
-                enabled=bool(topic["enabled"]) if topic else True,
+                enabled=True,
                 event_id=event_id,
             )
+            zhihu_store.enqueue_job(
+                database,
+                "scan",
+                {"topic_id": saved["id"]},
+                event_id="topic-start:" + event_id,
+            )
+            self.wake()
             return {
                 "card": self.management_card(),
-                "toast": "话题已保存",
+                "toast": "话题已保存，新一轮扫描已安排",
                 "toast_type": "success",
             }
         if action == "zhihu_topic_toggle":
@@ -212,26 +263,97 @@ class ZhihuActionHandler:
                 "card": self.management_card(),
                 "toast": "话题已启用" if enabled else "话题已停用",
             }
-        if action == "zhihu_schedule":
-            return {
-                "card": build_schedule_card(
-                    zhihu_store.get_schedule(database),
-                    max_payload_bytes=self.max_payload_bytes,
-                )
-            }
-        if action == "zhihu_schedule_save":
-            zhihu_store.set_schedule(
-                database, enabled=True, time_of_day=_field(form, "time_of_day")
+        if action in {
+            "zhihu_schedule",
+            "zhihu_schedule_save",
+            "zhihu_schedule_disable",
+        }:
+            raise FeedbackError("每日扫描已停用，请从话题管理主动开始新一轮")
+        if action in {
+            "zhihu_scan_status",
+            "zhihu_scan_pending",
+            "zhihu_scan_continue",
+            "zhihu_scan_append",
+            "zhihu_scan_append_submit",
+            "zhihu_scan_parameters",
+            "zhihu_scan_parameters_submit",
+            "zhihu_scan_stop",
+        }:
+            scan = self._scan(value)
+            if action == "zhihu_scan_pending":
+                return {
+                    "card": build_pending_card(
+                        scan,
+                        offset=_integer(value.get("offset", 0), minimum=0),
+                        max_payload_bytes=self.max_payload_bytes,
+                    )
+                }
+            if action == "zhihu_scan_parameters":
+                return {
+                    "card": build_parameter_form_card(
+                        scan, max_payload_bytes=self.max_payload_bytes
+                    )
+                }
+            if action == "zhihu_scan_append":
+                return {
+                    "card": build_append_form_card(
+                        scan["id"], max_payload_bytes=self.max_payload_bytes
+                    )
+                }
+            if action == "zhihu_scan_status":
+                return {"card": self._scan_card(scan)}
+            self._require_event(event_id)
+            from .zhihu_semantic_scan import request_control
+
+            operation = {
+                "zhihu_scan_continue": "continue",
+                "zhihu_scan_append_submit": "append",
+                "zhihu_scan_parameters_submit": "continue",
+                "zhihu_scan_stop": "stop",
+            }[action]
+            quantity = None
+            if operation == "append":
+                raw_quantity = _field(form, "quantity")
+                if not raw_quantity.isascii() or not raw_quantity.isdecimal():
+                    raise FeedbackError("追加数量需为正整数")
+                quantity = int(raw_quantity)
+                if not 1 <= quantity <= 10000:
+                    raise FeedbackError("追加数量需为 1–10000 的整数")
+            overrides = None
+            advance_collection = False
+            if action == "zhihu_scan_parameters_submit":
+                parameter_name = _field(form, "parameter_name")
+                raw_parameter_value = _field(form, "parameter_value")
+                if parameter_name not in TRIAL_PARAMETERS:
+                    raise FeedbackError("请选择本次唯一要修改的试用参数")
+                if (
+                    not raw_parameter_value.isascii()
+                    or not raw_parameter_value.isdecimal()
+                ):
+                    raise FeedbackError("参数值需为 1–100 的整数")
+                parameter_value = int(raw_parameter_value)
+                maximum = 8 if parameter_name == "evaluation_batch_size" else 100
+                if not 1 <= parameter_value <= maximum:
+                    raise FeedbackError(f"参数值需为 1–{maximum} 的整数")
+                overrides = {parameter_name: parameter_value}
+                advance_collection = parameter_name != "evaluation_batch_size"
+            request_control(
+                database,
+                scan["id"],
+                operation,
+                quantity=quantity,
+                event_id=event_id,
+                parameter_overrides=overrides,
+                advance_collection=advance_collection,
             )
             self.wake()
             return {
-                "card": self.management_card(),
-                "toast": "每日扫描已启用",
+                "card": self._scan_card(self._scan(value)),
+                "toast": "本轮停止请求已保存，在途结果会保留"
+                if operation == "stop"
+                else "继续请求已保存，先等最新反馈生效，再处理一批并等待你决定",
                 "toast_type": "success",
             }
-        if action == "zhihu_schedule_disable":
-            zhihu_store.set_schedule(database, enabled=False)
-            return {"card": self.management_card(), "toast": "每日扫描已停用"}
         if action == "zhihu_scan":
             self._require_event(event_id)
             payload = {}
@@ -253,14 +375,26 @@ class ZhihuActionHandler:
             topic_id = (
                 self._topic(value)["id"] if value.get("topic_id") is not None else None
             )
+            scan_id = None
+            if value.get("scan_id") is not None:
+                scan = self._scan(value)
+                scan_id = scan["id"]
+                if topic_id is not None and topic_id != scan["topic"]["id"]:
+                    raise FeedbackError("话题与扫描轮次不一致")
+                topic_id = scan["topic"]["id"]
             rows = zhihu_store.list_filtered(
-                database, topic_id=topic_id, limit=FILTERED_PER_PAGE + 1, offset=offset
+                database,
+                topic_id=topic_id,
+                limit=FILTERED_PER_PAGE + 1,
+                offset=offset,
+                scan_id=scan_id,
             )
             return {
                 "card": build_filtered_card(
                     rows,
                     offset=offset,
                     topic_id=topic_id,
+                    scan_id=scan_id,
                     max_payload_bytes=self.max_payload_bytes,
                 )
             }
@@ -272,7 +406,7 @@ class ZhihuActionHandler:
                 article,
                 snapshot_id=article["snapshot_id"],
                 feedback=feedback,
-                reason=str(value.get("reason") or "来自过滤结果的补充打标"),
+                reason=article.get("_review_reason") or "来自结果复核的补充反馈",
                 max_payload_bytes=self.max_payload_bytes,
             )
             zhihu_store.enqueue_card(
@@ -289,6 +423,7 @@ class ZhihuActionHandler:
             }
         if action not in {
             "zhihu_like",
+            "zhihu_like_submit",
             "zhihu_dislike",
             "zhihu_dislike_submit",
             "zhihu_feedback_edit",
@@ -307,11 +442,12 @@ class ZhihuActionHandler:
                     max_payload_bytes=self.max_payload_bytes,
                 )
             }
-        if action == "zhihu_dislike":
+        if action in {"zhihu_like", "zhihu_dislike"}:
             feedback = zhihu_store.latest_feedback(database, article["article_key"])
             return {
-                "card": build_dislike_form_card(
+                "card": build_feedback_form_card(
                     article,
+                    label="like" if action == "zhihu_like" else "dislike",
                     snapshot_id=snapshot_id,
                     feedback=feedback,
                     max_payload_bytes=self.max_payload_bytes,
@@ -321,8 +457,8 @@ class ZhihuActionHandler:
         zhihu_store.save_feedback(
             database,
             snapshot_id=snapshot_id,
-            label="like" if action == "zhihu_like" else "dislike",
-            keywords="" if action == "zhihu_like" else _field(form, "keywords"),
+            label="like" if action == "zhihu_like_submit" else "dislike",
+            reason=_field(form, "reason"),
             event_id=event_id,
             message_id=message_id,
         )
@@ -336,7 +472,7 @@ class ZhihuActionHandler:
                 learning=zhihu_learning.snapshot(database),
                 max_payload_bytes=self.max_payload_bytes,
             ),
-            "toast": "反馈已保存，后台更新偏好后用于后续扫描",
+            "toast": "反馈已保存，偏好更新中；明确继续后用于后续批次",
             "toast_type": "success",
         }
 
@@ -348,12 +484,73 @@ class ZhihuActionHandler:
             raise FeedbackError("该话题不存在")
         return topic
 
+    def _scan(self, value: dict) -> dict:
+        from .zhihu_scan import get_scan
+
+        try:
+            scan_id = str(uuid.UUID(str(value.get("scan_id", ""))))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise FeedbackError("扫描编号无效") from exc
+        scan = get_scan(self.database_path, scan_id)
+        if not scan:
+            raise FeedbackError("找不到对应的语义扫描，请开始新一轮")
+        return scan
+
+    def _scan_card(self, scan: dict) -> dict:
+        from .zhihu_semantic_scan import refresh_feedback_stats
+
+        refresh_feedback_stats(self.database_path, scan)
+        batches = scan.get("batches") or []
+        if isinstance(batches, dict):
+            batches = list(batches.values())
+        batch = batches[-1] if batches else scan.get("batch")
+        return build_batch_summary_card(
+            scan,
+            batch,
+            latest_learning=scan.get("learning"),
+            max_payload_bytes=self.max_payload_bytes,
+        )
+
     def _content(self, value: dict) -> dict:
         article = zhihu_store.get_content(
             self.database_path, snapshot_id=_integer(value.get("snapshot_id"))
         )
         if article is None:
             raise FeedbackError("找不到对应的知乎正文快照")
+        # Evaluation may have completed after the immutable body snapshot was saved.
+        scan_id = self._scan(value)["id"] if value.get("scan_id") is not None else None
+        query = (
+            "SELECT article_json,reason,coalesce((SELECT json_extract(s.state_json,'$.evaluation_policy') "
+            "FROM zhihu_scans s WHERE s.id=r.scan_id),'relevance_v2') AS evaluation_policy "
+            "FROM zhihu_candidate_results r WHERE snapshot_id=?"
+        )
+        args = [article["snapshot_id"]]
+        if scan_id:
+            query += " AND scan_id=?"
+            args.append(scan_id)
+        with closing(connect(self.database_path, read_only=True, timeout=0.3)) as conn:
+            row = conn.execute(
+                query + " ORDER BY updated_at DESC LIMIT 1", args
+            ).fetchone()
+        if scan_id and row is None:
+            raise FeedbackError("该内容不属于当前轮次的复核结果")
+        if row:
+            evaluated = json.loads(row[0])
+            article["_review_reason"] = row[1]
+            article["evaluation_policy"] = row[2]
+            for field in (
+                "relevance",
+                "evaluation",
+                "stages",
+                "semantic_result",
+                "semantic",
+                "summary",
+                "decision",
+                "decision_reason",
+            ):
+                article.pop(field, None)
+                if field in evaluated:
+                    article[field] = evaluated[field]
         return article
 
     @staticmethod

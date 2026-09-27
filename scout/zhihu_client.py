@@ -102,6 +102,9 @@ class CollectorClient:
     def records(self, run_id):
         return self._request("/v1/runs/" + str(uuid.UUID(run_id)) + "/records")
 
+    def resume(self, run_id):
+        return self._request("/v1/runs/" + str(uuid.UUID(run_id)) + "/resume", {})
+
     def login_status(self):
         return self._request("/v1/login")
 

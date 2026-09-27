@@ -1,7 +1,7 @@
-"""SQLite state for the sole owner's Zhihu topics and literal feedback.
+"""SQLite state for the sole owner's Zhihu topics and semantic feedback.
 
 Call initialize while holding the shared sender lock, after initializing the
-legacy delivery store. Callback helpers perform only short local transactions.
+delivery store. Callback helpers perform only short local transactions.
 """
 
 from __future__ import annotations
@@ -9,23 +9,23 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import time
+import sqlite3
 import uuid
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from .config import ConfigError
 from .database import connect, transaction
 from .storage import FeedbackError
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SCHEMA = (
     """CREATE TABLE IF NOT EXISTS zhihu_settings (
         key TEXT PRIMARY KEY, value_json TEXT NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS zhihu_topics (
         id INTEGER PRIMARY KEY, name TEXT NOT NULL, search_terms_json TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
         time_range TEXT NOT NULL CHECK(time_range IN ('7d','30d','all')),
         enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
@@ -58,13 +58,15 @@ SCHEMA = (
         snapshot_id INTEGER NOT NULL REFERENCES zhihu_content_snapshots(snapshot_id),
         label TEXT NOT NULL CHECK(label IN ('like','dislike')),
         keywords_json TEXT NOT NULL, event_id TEXT UNIQUE, message_id TEXT NOT NULL,
+        reason TEXT NOT NULL DEFAULT '', origin TEXT NOT NULL DEFAULT 'semantic',
         created_at TEXT NOT NULL)""",
     """CREATE INDEX IF NOT EXISTS zhihu_feedback_content
         ON zhihu_feedback_revisions(content_key,revision_id DESC)""",
-    """CREATE TABLE IF NOT EXISTS zhihu_learning_versions (
+    """CREATE TABLE IF NOT EXISTS zhihu_semantic_preferences (
         version INTEGER PRIMARY KEY, cutoff_revision_id INTEGER NOT NULL,
-        status TEXT NOT NULL CHECK(status IN ('ready','calibrating','failed')),
-        model_json TEXT NOT NULL, error TEXT NOT NULL, created_at TEXT NOT NULL)""",
+        status TEXT NOT NULL CHECK(status IN ('ready','failed','busy')),
+        model_json TEXT NOT NULL, evidence_json TEXT NOT NULL,
+        error TEXT NOT NULL, created_at TEXT NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS zhihu_jobs (
         id INTEGER PRIMARY KEY, kind TEXT NOT NULL, payload_json TEXT NOT NULL,
         event_id TEXT UNIQUE, status TEXT NOT NULL DEFAULT 'pending',
@@ -92,56 +94,44 @@ def _json(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
 
 
+def _columns(conn, table):
+    return {row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')}
+
+
+def _schema_complete(conn):
+    # Verify current columns and indexes before taking a write transaction.
+    with closing(sqlite3.connect(":memory:")) as expected:
+        for statement in SCHEMA:
+            expected.execute(statement)
+        for row in expected.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ):
+            if not _columns(expected, row[0]) <= _columns(conn, row[0]):
+                return False
+        for row in expected.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND sql IS NOT NULL"
+        ):
+            if not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", row
+            ).fetchone():
+                return False
+    return not (
+        _columns(conn, "zhihu_link_deliveries")
+        and not {"message_type", "card_json", "snapshot_id"}
+        <= _columns(conn, "zhihu_link_deliveries")
+    )
+
+
 def initialize(database):
-    """Back up all existing state before applying the topic/learning migration."""
+    """Initialize the current schema without importing historical feedback."""
     path = Path(database)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(connect(path, rows=True)) as conn:
-        has_settings = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE name='zhihu_settings'"
-        ).fetchone()
-        if has_settings:
-            version = conn.execute(
-                "SELECT value_json FROM zhihu_settings WHERE key='schema_version'"
-            ).fetchone()
-            if version and json.loads(version[0]) >= SCHEMA_VERSION:
-                return
-        if conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1"
-        ).fetchone():
-            backup = path.with_name(
-                f"{path.stem}-before-zhihu-topics-{time.time_ns()}.sqlite3"
-            )
-            with closing(connect(backup)) as destination:
-                conn.backup(destination)
-                if destination.execute("PRAGMA integrity_check").fetchall() != [
-                    ("ok",)
-                ]:
-                    raise ConfigError("知乎话题迁移备份完整性检查失败")
-        conn.execute("BEGIN IMMEDIATE")
+    with closing(connect(path)) as conn:
+        if _schema_complete(conn):
+            return
         with conn:
             for statement in SCHEMA:
                 conn.execute(statement)
-            # Existing rows keep their original message format and stable UUID.
-            if conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE name='zhihu_link_deliveries'"
-            ).fetchone():
-                columns = {
-                    row[1]
-                    for row in conn.execute("PRAGMA table_info(zhihu_link_deliveries)")
-                }
-                for name, definition in (
-                    ("message_type", "TEXT NOT NULL DEFAULT 'text'"),
-                    ("card_json", "TEXT"),
-                    (
-                        "snapshot_id",
-                        "INTEGER REFERENCES zhihu_content_snapshots(snapshot_id)",
-                    ),
-                ):
-                    if name not in columns:
-                        conn.execute(
-                            f"ALTER TABLE zhihu_link_deliveries ADD COLUMN {name} {definition}"
-                        )
             conn.execute(
                 "INSERT OR REPLACE INTO zhihu_settings VALUES ('schema_version',?)",
                 (_json(SCHEMA_VERSION),),
@@ -179,69 +169,109 @@ def _terms(value):
         raise FeedbackError("搜索词必须是文字列表")
     result, seen = [], set()
     for term in value:
-        term = term.strip().casefold()
+        term = term.strip()
         if term and term not in seen:
             result.append(term)
             seen.add(term)
-    if not result or len(result) > 30 or any(len(term) > 200 for term in result):
-        raise FeedbackError("请填写 1–30 个搜索词，每个最多 200 字")
+    if not result or any(len(term) > 200 for term in result):
+        raise FeedbackError("请填写搜索词，每个最多 200 字")
     return result
 
 
 def save_topic(
     database,
     name,
-    search_terms,
+    search_terms=None,
     time_range="30d",
     topic_id=None,
     enabled=True,
     event_id="",
+    description=None,
 ):
     if not isinstance(name, str) or not 1 <= len(name.strip()) <= 100:
         raise FeedbackError("话题名称需为 1–100 字")
-    time_range = {7: "7d", 30: "30d", "7": "7d", "30": "30d", "unlimited": "all"}.get(
-        time_range, time_range
-    )
-    if time_range not in {"7d", "30d", "all"}:
-        raise FeedbackError("发布时间范围应为近 7 天、近 30 天或不限")
-    terms, stamp = _terms(search_terms), _now()
+    if description is not None and (
+        not isinstance(description, str) or not 1 <= len(description.strip()) <= 5000
+    ):
+        raise FeedbackError("请填写 1–5000 字的自然语言关注描述")
+    terms = _terms(search_terms) if search_terms is not None else None
+    request = {
+        "name": name.strip(),
+        "search_terms": terms,
+        "time_range": "30d",
+        "topic_id": topic_id,
+        "enabled": bool(enabled),
+        "description": description.strip() if description is not None else None,
+    }
+    stamp = _now()
     with transaction(database, rows=True, timeout=0.3) as conn:
         event_key = "topic_event:" + event_id
+        request_key = "topic_event_request:" + event_id
         if event_id:
             saved = conn.execute(
                 "SELECT value_json FROM zhihu_settings WHERE key=?", (event_key,)
             ).fetchone()
             if saved:
-                return json.loads(saved[0])
-        if topic_id is None:
+                result = json.loads(saved[0])
+                saved_request = conn.execute(
+                    "SELECT value_json FROM zhihu_settings WHERE key=?",
+                    (request_key,),
+                ).fetchone()
+                if saved_request:
+                    matches = json.loads(saved_request[0]) == request
+                else:
+                    # Legacy event receipts contain only the result. Validate
+                    # every supplied field against that original result, not
+                    # the current topic, which may since have been edited.
+                    matches = (
+                        result["name"] == request["name"]
+                        and bool(result["enabled"]) == request["enabled"]
+                        and (topic_id is None or topic_id == result["id"])
+                        and (terms is None or terms == result["search_terms"])
+                        and (
+                            description is None
+                            or request["description"]
+                            == result.get("description", result["name"])
+                        )
+                    )
+                if not matches:
+                    raise FeedbackError("同一回调标识对应了不同话题参数")
+                return result
+        previous = None
+        if topic_id is not None:
+            previous = conn.execute(
+                "SELECT * FROM zhihu_topics WHERE id=?", (topic_id,)
+            ).fetchone()
+            if previous is None:
+                raise FeedbackError("话题不存在")
+        # Retain historical query terms as evidence. New queries are generated
+        # from description and stored separately in each scan's fixed plan.
+        if terms is None:
+            terms = json.loads(previous["search_terms_json"]) if previous else []
+        if description is None:
+            description = previous["description"] if previous else name.strip()
+        values = (
+            name.strip(),
+            _json(terms),
+            "30d",
+            int(bool(enabled)),
+            description.strip(),
+            stamp,
+        )
+        if previous is None:
             cursor = conn.execute(
                 """INSERT INTO zhihu_topics
-                (name,search_terms_json,time_range,enabled,created_at,updated_at)
-                VALUES (?,?,?,?,?,?)""",
-                (
-                    name.strip(),
-                    _json(terms),
-                    time_range,
-                    int(bool(enabled)),
-                    stamp,
-                    stamp,
-                ),
+                (name,search_terms_json,time_range,enabled,description,updated_at,created_at)
+                VALUES (?,?,?,?,?,?,?)""",
+                (*values, stamp),
             )
             topic_id = cursor.lastrowid
         else:
-            cursor = conn.execute(
-                "UPDATE zhihu_topics SET name=?,search_terms_json=?,time_range=?,enabled=?,updated_at=? WHERE id=?",
-                (
-                    name.strip(),
-                    _json(terms),
-                    time_range,
-                    int(bool(enabled)),
-                    stamp,
-                    topic_id,
-                ),
+            conn.execute(
+                """UPDATE zhihu_topics SET name=?,search_terms_json=?,time_range=?,
+                enabled=?,description=?,updated_at=? WHERE id=?""",
+                (*values, topic_id),
             )
-            if not cursor.rowcount:
-                raise FeedbackError("话题不存在")
         result = _topic(
             conn.execute(
                 "SELECT * FROM zhihu_topics WHERE id=?", (topic_id,)
@@ -250,6 +280,10 @@ def save_topic(
         if event_id:
             conn.execute(
                 "INSERT INTO zhihu_settings VALUES (?,?)", (event_key, _json(result))
+            )
+            conn.execute(
+                "INSERT INTO zhihu_settings VALUES (?,?)",
+                (request_key, _json(request)),
             )
         return result
 
@@ -411,27 +445,6 @@ def get_content(database, snapshot_id=None, content_key=None):
         return _content(row)
 
 
-def normalize_keywords(keywords, body):
-    if isinstance(keywords, str):
-        keywords = re.split(r"[,，]", keywords)
-    if not isinstance(keywords, (list, tuple)) or any(
-        not isinstance(word, str) for word in keywords
-    ):
-        raise FeedbackError("降权关键词需用中英文逗号分隔")
-    result = list(
-        dict.fromkeys(word.strip().casefold() for word in keywords if word.strip())
-    )
-    if not result:
-        raise FeedbackError("不喜欢必须填写至少一个降权关键词")
-    if len(result) > 100 or any(len(word) > 200 for word in result):
-        raise FeedbackError("最多填写 100 个降权关键词，每个最多 200 字")
-    folded = body.casefold()
-    missing = [word for word in result if word not in folded]
-    if missing:
-        raise FeedbackError("以下关键词未在该篇正文中出现：" + "、".join(missing))
-    return result
-
-
 def _feedback(row):
     if row is None:
         return None
@@ -450,20 +463,20 @@ def latest_feedback(database, content_key):
         )
 
 
-def save_feedback(
-    database, snapshot_id, label, keywords="", event_id="", message_id=""
-):
+def save_feedback(database, snapshot_id, label, *, reason, event_id="", message_id=""):
     if label not in {"like", "dislike"}:
         raise FeedbackError("反馈只能为喜欢或不喜欢")
+    if not isinstance(reason, str) or len(reason.strip()) > 5000:
+        raise FeedbackError("反馈原因需为最多 5000 字的文字")
+    reason = reason.strip()
+    if not reason:
+        raise FeedbackError("喜欢和不喜欢都需要填写原因")
     with transaction(database, rows=True, timeout=0.3) as conn:
         article = conn.execute(
             "SELECT * FROM zhihu_content_snapshots WHERE snapshot_id=?", (snapshot_id,)
         ).fetchone()
         if article is None:
             raise FeedbackError("找不到该篇完整正文快照")
-        words = (
-            normalize_keywords(keywords, article["body"]) if label == "dislike" else []
-        )
         existing = (
             conn.execute(
                 "SELECT * FROM zhihu_feedback_revisions WHERE event_id=?", (event_id,)
@@ -486,7 +499,7 @@ def save_feedback(
                 existing["content_key"] != article["content_key"]
                 or existing["snapshot_id"] != snapshot_id
                 or existing["label"] != label
-                or json.loads(existing["keywords_json"]) != words
+                or existing["reason"] != reason
             ):
                 raise FeedbackError("同一回调标识对应了不同反馈")
             return {**_feedback(existing), "created": False}
@@ -498,7 +511,8 @@ def save_feedback(
             previous
             and previous["label"] == label
             and previous["snapshot_id"] == snapshot_id
-            and json.loads(previous["keywords_json"]) == words
+            and previous["reason"] == reason
+            and previous["origin"] == "semantic"
         ):
             if event_id:
                 conn.execute(
@@ -508,16 +522,18 @@ def save_feedback(
             return {**_feedback(previous), "created": False}
         cursor = conn.execute(
             """INSERT INTO zhihu_feedback_revisions
-            (content_key,snapshot_id,label,keywords_json,event_id,message_id,created_at)
-            VALUES (?,?,?,?,?,?,?)""",
+            (content_key,snapshot_id,label,keywords_json,event_id,message_id,created_at,reason,origin)
+            VALUES (?,?,?,?,?,?,?,?,?)""",
             (
                 article["content_key"],
                 snapshot_id,
                 label,
-                _json(words),
+                "[]",
                 event_id or None,
                 message_id,
                 _now(),
+                reason,
+                "semantic",
             ),
         )
         revision = cursor.lastrowid
@@ -641,21 +657,26 @@ def save_candidate_result(
         )
 
 
-def list_filtered(database, topic_id=None, limit=20, offset=0):
+def list_filtered(database, topic_id=None, limit=20, offset=0, *, scan_id=None):
     with closing(connect(database, read_only=True, rows=True, timeout=0.3)) as conn:
         clauses, values = (
             [
-                "reason IN ('keyword_filtered','preference','filtered','keyword','date_unknown','date_expired','date_future','body_incomplete','body_failed')"
+                "reason IN ('reject','irrelevant','preference_rejected','not_recommended','keyword_filtered','preference','filtered','keyword','date_unknown','date_missing','date_invalid','date_expired','date_future','body_incomplete','body_failed','model_failed','model_error','relevance_failed','evaluation_failed')"
             ],
             [],
         )
         if topic_id is not None:
             clauses.append("topic_id=?")
             values.append(topic_id)
+        if scan_id is not None:
+            clauses.append("scan_id=?")
+            values.append(scan_id)
         rows = conn.execute(
-            "SELECT * FROM zhihu_candidate_results WHERE "
+            "SELECT r.*,coalesce((SELECT json_extract(s.state_json,'$.evaluation_policy') "
+            "FROM zhihu_scans s WHERE s.id=r.scan_id),'relevance_v2') AS evaluation_policy "
+            "FROM zhihu_candidate_results r WHERE "
             + " AND ".join(clauses)
-            + " ORDER BY CASE WHEN reason='keyword_filtered' THEN 0 ELSE 1 END,updated_at DESC LIMIT ? OFFSET ?",
+            + " ORDER BY CASE WHEN reason IN ('reject','not_recommended','keyword_filtered') THEN 0 ELSE 1 END,updated_at DESC LIMIT ? OFFSET ?",
             (*values, min(100, max(1, int(limit))), max(0, int(offset))),
         )
         result = []

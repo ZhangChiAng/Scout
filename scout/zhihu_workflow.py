@@ -1,4 +1,4 @@
-"""Background-only scheduling, learning, and management/review card delivery."""
+"""Background semantic scan jobs, learning, and management/review card delivery."""
 
 import fcntl
 import json
@@ -6,9 +6,7 @@ import logging
 import time
 import uuid
 from contextlib import closing
-from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from . import zhihu_delivery, zhihu_learning, zhihu_store
 from .config import ConfigError, resolve_feishu_delivery
@@ -33,34 +31,56 @@ def work(database):
                 zhihu_store.initialize(path)
         except RunLockedError:
             return
-        zhihu_learning.train_pending(path)
-        _schedule(path)
+        with closing(connect(path, read_only=True)) as conn:
+            explicit_retry = (
+                conn.execute(
+                    """SELECT 1 FROM zhihu_jobs WHERE kind='semantic_control' AND status='pending'
+                AND json_extract(payload_json,'$.action') IN ('continue','append') LIMIT 1"""
+                ).fetchone()
+                is not None
+            )
+        zhihu_learning.train_pending(path, force=explicit_retry)
+        _refresh_feedback_reports(path)
         _jobs(path)
         _cards(path)
 
 
-def _schedule(database):
-    schedule = zhihu_store.get_schedule(database)
-    if not schedule["enabled"]:
-        return
-    now = datetime.now(ZoneInfo(schedule["timezone"]))
-    if now.date().isoformat() < schedule.get("first_run_date", now.date().isoformat()):
-        return
-    if now.strftime("%H:%M") < schedule["time_of_day"]:
-        return
-    for topic in zhihu_store.list_topics(database, enabled_only=True):
-        zhihu_store.enqueue_job(
-            database,
-            "scan",
-            {"topic_id": topic["id"]},
-            event_id=f"daily:{now.date().isoformat()}:{topic['id']}",
-        )
+def _refresh_feedback_reports(database):
+    from .zhihu_semantic_scan import _save, export_report, refresh_feedback_stats
+
+    path = Path(database)
+    with path.with_suffix(path.suffix + ".zhihu-scan.lock").open("a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        learning = zhihu_learning.snapshot(path)
+        with closing(connect(path, read_only=True)) as conn:
+            rows = conn.execute(
+                "SELECT state_json FROM zhihu_scans WHERE json_extract(state_json,'$.schema_version')=3"
+            ).fetchall()
+        for row in rows:
+            state = json.loads(row[0])
+            if state.get("learning") != learning:
+                refresh_feedback_stats(path, state)
+                _save(path, state)
+                export_report(state)
 
 
 def _jobs(database):
-    from .zhihu_topic_scan import create_topic_scan
+    from .zhihu_semantic_scan import create_scan
 
     for job in zhihu_store.pending_jobs(database, kind="scan")[:5]:
+        if (
+            str(job.get("event_id") or "").startswith("daily:")
+            and job["status"] == "pending"
+        ):
+            with transaction(database) as conn:
+                conn.execute(
+                    "UPDATE zhihu_jobs SET status='cancelled',last_error='每日扫描已停用' WHERE id=?",
+                    (job["id"],),
+                )
+            continue
         zhihu_store.start_job(database, job["id"])
         try:
             topic_id = job["payload"].get("topic_id")
@@ -78,7 +98,7 @@ def _jobs(database):
                         f"scout:zhihu:job:{job['id']}:topic:{topic['id']}",
                     )
                 )
-                create_topic_scan(database, topic["id"], scan_uuid)
+                create_scan(database, topic["id"], scan_uuid)
         except RunLockedError:
             return
         except (CollectorError, ConfigError, ValueError) as exc:
@@ -109,7 +129,12 @@ def _cards(database):
 def _send_card(database):
     with closing(connect(database, read_only=True, rows=True)) as conn:
         row = conn.execute(
-            "SELECT * FROM zhihu_card_deliveries WHERE status IN ('pending','sending') AND retry_at<=? ORDER BY id LIMIT 1",
+            """SELECT * FROM zhihu_card_deliveries d
+            WHERE status IN ('pending','sending') AND retry_at<=?
+            AND NOT (event_id LIKE 'semantic:%' AND EXISTS (
+                SELECT 1 FROM zhihu_settings s
+                WHERE s.key='semantic_stop:' || substr(d.event_id,10,36)))
+            ORDER BY id LIMIT 1""",
             (time.time(),),
         ).fetchone()
     if row is None:

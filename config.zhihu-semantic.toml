@@ -1,0 +1,7 @@
+# 每轮与每批保存快照；搜索词完整固定，不设数量上限。
+[semantic]
+search_latest_pages_per_advance = 1
+search_general_pages_per_advance = 1
+question_pages_per_advance = 1
+evaluation_batch_size = 8
+model_request_size = 1

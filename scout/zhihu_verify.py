@@ -3,41 +3,18 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from .config import ConfigError
-from .rules import Rules, TextArticle
 
-STATUSES = {
-    "body": "正文",
-    "partial_body": "部分正文",
-    "summary_only": "仅摘要",
-    "failed": "失败",
-}
-
-
-def write_json(path: Path, value) -> None:
-    path.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
-        encoding="utf-8",
-    )
+STATUSES = {"body", "partial_body", "summary_only", "failed"}
 
 
 def digest(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
-
-
-def run_file(run_dir: Path, name: str) -> Path:
-    if not name or Path(name).name != name or name in {".", ".."}:
-        raise ConfigError("输出/报告名称必须是运行目录内的文件名")
-    path = (run_dir / name).resolve()
-    if path.parent != run_dir.resolve():
-        raise ConfigError("文件必须位于运行目录内")
-    return path
 
 
 def evidence_file(run_dir: Path, name: str) -> Path:
@@ -126,160 +103,6 @@ def validate_article(article: dict) -> dict:
         "article_key": f"zhihu:{article['content_type']}:{article['content_id']}",
         "source": "知乎",
     }
-
-
-def evaluate_article(article: dict, rules: Rules) -> dict:
-    if article["status"] == "failed":
-        evaluation = {
-            "regex_hits": [],
-            "keyword_hits": [],
-            "score": None,
-            "threshold": rules.threshold,
-            "recalled": None,
-            "retained": False,
-        }
-    else:
-        evaluation = rules.evaluate(
-            TextArticle(*(article[name] for name in ("title", "summary", "body")))
-        )
-    eligible = complete_body(article) and evaluation["retained"]
-    return {
-        "article": article,
-        **evaluation,
-        "rule_retained": evaluation["retained"],
-        "retained": eligible,
-        "eligible": eligible,
-    }
-
-
-def score(input_path: Path, rules: Rules) -> dict:
-    raw = input_path.read_bytes()
-    collection = json.loads(raw)
-    if (
-        not isinstance(collection, dict)
-        or collection.get("schema_version") != 1
-        or not isinstance(collection.get("queries"), list)
-        or not isinstance(collection.get("records"), list)
-    ):
-        raise ConfigError("采集 JSON 需要 schema_version=1、queries 和 records 数组")
-    articles = [validate_article(a) for a in collection["records"]]
-    for article in articles:
-        discovery = article["first_discovery"]
-        if (
-            discovery["query_index"] > len(collection["queries"])
-            or discovery["query"] != collection["queries"][discovery["query_index"] - 1]
-        ):
-            raise ConfigError("首次发现位置与采集查询序列不一致")
-    articles.sort(
-        key=lambda a: (
-            a["first_discovery"]["query_index"],
-            a["first_discovery"]["result_index"],
-        )
-    )
-    unique = {}
-    for article in articles:
-        unique.setdefault(article["article_key"], article)
-    hashes = {}
-    for article in unique.values():
-        hashes.update(validate_evidence(input_path.parent, article))
-    results = [evaluate_article(a, rules) for a in unique.values()]
-    complete = [r for r in results if r["article"]["status"] == "body"]
-    counts = {
-        status: sum(r["article"]["status"] == status for r in results)
-        for status in STATUSES
-    }
-    return {
-        "schema_version": 1,
-        "scored_at": datetime.now(UTC).isoformat(),
-        "queries": collection["queries"],
-        "input_file": input_path.name,
-        "input_sha256": digest(raw),
-        "rules": rules.snapshot(),
-        "rules_sha256": digest(
-            json.dumps(rules.snapshot(), ensure_ascii=False, sort_keys=True).encode()
-        ),
-        "raw_sha256": hashes,
-        "results": results,
-        "collection_status": collection.get("status", "historical"),
-        "coverage": collection.get("coverage", []),
-        "errors": collection.get("errors", []),
-        "summary": {
-            "candidates": len(results),
-            "duplicates_removed": len(articles) - len(results),
-            **counts,
-            "read_failures": sum(bool(r["article"]["read_error"]) for r in results),
-            "body_recalled": sum(r["recalled"] for r in complete),
-            "body_no_match": sum(not r["recalled"] for r in complete),
-            "retained": sum(r["retained"] for r in results),
-        },
-        "scope": "仅本轮搜索发现且实际读取的知乎内容；不代表知乎全站。",
-    }
-
-
-def render_report(report: dict) -> str:
-    lines = [
-        "# 知乎单次规则验证",
-        "",
-        report["scope"],
-        "",
-        "正文以外的评分只供诊断，不能判定正文无命中或用于发送。",
-        "",
-        "```json",
-        json.dumps(report["summary"], ensure_ascii=False, indent=2),
-        "```",
-        "",
-        "规则：",
-        "",
-        "```json",
-        json.dumps(report["rules"], ensure_ascii=False, indent=2),
-        "```",
-        "",
-    ]
-    for complete, label in ((True, "已读取正文"), (False, "不完整或失败")):
-        lines.extend(["## " + label, ""])
-        for index, result in enumerate(report["results"], 1):
-            article = result["article"]
-            if (article["status"] == "body") != complete:
-                continue
-            lines.extend(
-                [
-                    f"### {index}. {article['title']}",
-                    "",
-                    f"原文：{article['url']}",
-                    "",
-                    (
-                        f"键：`{article['article_key']}`；作者：{article['author'] or '未知'}；"
-                        f"获取：{STATUSES[article['status']]}。"
-                    ),
-                    "",
-                    (
-                        f"发布时间：{article['published_at'] or '未提供'}；"
-                        f"更新时间：{article['updated_at'] or '未提供'}。"
-                    ),
-                    "",
-                    (
-                        f"得分：{result['score']}；阈值：{result['threshold']}；"
-                        f"正文保留：{result['retained']}。"
-                    ),
-                    "",
-                ]
-            )
-            if article["read_error"]:
-                lines.extend(["读取问题：" + article["read_error"], ""])
-            for hit in result["regex_hits"] + result["keyword_hits"]:
-                label = hit.get("pattern", hit.get("text"))
-                weight = f"，权重 {hit['weight']}" if "weight" in hit else ""
-                lines.extend([f"匹配 `{label}`{weight}：", ""])
-                for field, evidence in hit["evidence"].items():
-                    lines.extend(
-                        [
-                            f"- {field}[{evidence['start']}:{evidence['end']}]："
-                            + json.dumps(evidence["text"], ensure_ascii=False),
-                        ]
-                    )
-                lines.append("")
-            lines.extend(["原始返回：" + "、".join(article["raw_files"]), ""])
-    return "\n".join(lines)
 
 
 def complete_body(article):
