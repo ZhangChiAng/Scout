@@ -36,7 +36,7 @@ DEFAULT_PARAMS = {
     "search_latest_pages_per_advance": 1,
     "search_general_pages_per_advance": 1,
     "question_pages_per_advance": 1,
-    "evaluation_batch_size": 8,
+    "evaluation_batch_size": 32,
     "model_request_size": 1,
 }
 
@@ -272,7 +272,12 @@ def _save(database, state):
     # stopping. Existing queued sends are held by the delivery worker as well.
     if stop_requested(database, state["id"]):
         state["stop_requested"] = True
-        state["status"] = "stopping" if state.get("active") else "stopped"
+        in_flight = any(
+            any(b.get("pipeline", {}).get("active", {}).values())
+            for b in state.get("batches", [])
+            if b["status"] != "completed"
+        )
+        state["status"] = "stopping" if state.get("active") or in_flight else "stopped"
         state["stop_reason"] = "user_stop"
     with transaction(database) as conn:
         conn.execute(
@@ -347,41 +352,20 @@ def _controls(database, state):
                     state["controls"][-1]["parameters_after"] = dict(state["params"])
                 if command.get("advance_collection"):
                     state["force_collection"] = True
-                # Reuse an existing batch and all successful results on retry.
-                if state["batches"] and state["batches"][-1]["status"] != "completed":
-                    for key in state["batches"][-1]["keys"]:
-                        candidate = state["candidates"][key]
-                        if candidate["status"] in {
-                            "body_failed",
-                            "model_failed",
-                            "relevance_failed",
-                            "evaluation_failed",
-                        }:
-                            body_failed = candidate["status"] == "body_failed"
-                            candidate["status"] = "pending"
-                            candidate.pop("error", None)
-                            if body_failed:
-                                candidate.pop("body_attempted", None)
-                                candidate["body_retries"] = (
-                                    candidate.get("body_retries", 0) + 1
-                                )
+                # Model failures are terminal. Continuing only resumes unfinished
+                # stages or selects new candidates; successful stages stay cached.
+                for candidate in state["candidates"].values():
+                    if candidate["status"] == "body_failed":
+                        candidate["status"] = "pending"
+                        candidate.pop("error", None)
+                        candidate.pop("body_attempted", None)
+                        candidate["body_retries"] = candidate.get("body_retries", 0) + 1
+                        if (
+                            state["batches"]
+                            and state["batches"][-1]["status"] != "completed"
+                        ):
+                            key = candidate["article"]["article_key"]
                             state["batches"][-1]["results"].pop(key, None)
-                else:
-                    for candidate in state["candidates"].values():
-                        if candidate["status"] in {
-                            "body_failed",
-                            "model_failed",
-                            "relevance_failed",
-                            "evaluation_failed",
-                        }:
-                            body_failed = candidate["status"] == "body_failed"
-                            candidate["status"] = "pending"
-                            candidate.pop("error", None)
-                            if body_failed:
-                                candidate.pop("body_attempted", None)
-                                candidate["body_retries"] = (
-                                    candidate.get("body_retries", 0) + 1
-                                )
                 active = state.get("active")
                 if active and active.get("terminal_failure"):
                     if active["payload"]["kind"] in {
@@ -863,6 +847,7 @@ def _new_batch(database, state, keys):
         "feedback_revision": preference["feedback_revision"],
         "params": dict(state["params"]),
         "results": {},
+        "sol_queue": [],
         "status": "evaluating",
         "started_at": _now(),
         "stats": {},
@@ -918,95 +903,17 @@ def _save_result(database, state, batch, key, result):
     _save(database, state)
 
 
-def _run_model_stage(database, state, batch, key, stage_name):
-    from .zhihu_semantics import classify_relevance, evaluate_content
+def _evaluate(database, state, batch, shutdown=None):
+    from .zhihu_pipeline import run_pipeline
 
-    candidate = state["candidates"][key]
-    stage = candidate.setdefault("stages", {}).setdefault(stage_name, {"attempts": []})
-    # A process interruption has unknown remote completion; preserve the attempt
-    # record. A completed local stage always returns through _evaluate's cache.
-    for old in stage["attempts"]:
-        if old["status"] == "running":
-            old.update(status="interrupted", error="进程中断，未取得可复用结果")
-    attempt = {
-        "batch_id": batch["id"],
-        "status": "running",
-        "started_at": _now(),
-        "telemetry": {},
-    }
-    stage["attempts"].append(attempt)
-    stage.update(status="running", batch_id=batch["id"])
-    _save(database, state)
-    started = time.monotonic()
-    result, failure = None, None
-    try:
-        if stage_name == "relevance":
-            result = classify_relevance(
-                state["topic"], candidate["article"], telemetry=attempt["telemetry"]
-            )
-        else:
-            result = evaluate_content(
-                state["topic"],
-                batch["preference"],
-                candidate["article"],
-                relevance=candidate["stages"]["relevance"]["result"],
-                telemetry=attempt["telemetry"],
-            )
-    except (LLMError, ConfigError, ValueError, TypeError, OSError) as exc:
-        failure = exc
-    finally:
-        telemetry = attempt["telemetry"]
-        telemetry.setdefault("duration_seconds", round(time.monotonic() - started, 3))
-        attempt["completed_at"] = _now()
-        _metric(state, "model_calls", telemetry.get("calls", 0))
-        _metric(state, stage_name + "_model_calls", telemetry.get("calls", 0))
-        _metric(state, stage_name + "_seconds", telemetry["duration_seconds"])
-        stage["telemetry"] = dict(telemetry)
-    if failure is not None:
-        error = str(failure)[:300]
-        attempt.update(status="failed", error=error)
-        stage.update(status="failed", error=error)
-        kind = stage_name + "_failed"
-        state["errors"].append(
-            {
-                "kind": kind,
-                "stage": stage_name,
-                "content_key": key,
-                "batch_id": batch["id"],
-                "message": error,
-                "at": _now(),
-            }
-        )
-        _metric(state, kind)
-        state.update(
-            status="model_busy"
-            if isinstance(failure, CodexBusyError)
-            else "model_failed",
-            last_error={"kind": kind, "stage": stage_name, "message": error},
-        )
-        _save_result(
-            database,
-            state,
-            batch,
-            key,
-            {"error": kind, "stage": stage_name, "reason": error},
-        )
-        _save(database, state)
-        return None
-    attempt["status"] = "completed"
-    stage.update(status="completed", result=result, completed_at=_now())
-    stage.pop("error", None)
-    # Persist this success before preparing snapshots, sending, or calling the
-    # other model. Recovery therefore reuses Luna even after a Sol failure.
-    _save(database, state)
-    return result
-
-
-def _evaluate(database, state, batch):
+    # Finish the existing resumable body collection before opening the shared
+    # model session. The coordinator then runs the whole model pipeline without
+    # the background worker's five-second delay between individual requests.
+    history = _history(database)
     for key in batch["keys"]:
         if key in batch["results"]:
             continue
-        if stop_requested(database, state["id"]):
+        if stop_requested(database, state["id"]) or (shutdown and shutdown.is_set()):
             return
         candidate = state["candidates"][key]
         article = candidate["article"]
@@ -1019,62 +926,30 @@ def _evaluate(database, state, batch):
                     {"kind": "detail", "items": [article]},
                     content_key=key,
                 )
-            else:
-                _metric(state, "body_failed")
-                _save_result(
-                    database,
-                    state,
-                    batch,
-                    key,
-                    {
-                        "error": "body_failed",
-                        "stage": "body",
-                        "reason": article.get("read_error")
-                        or "正文不完整，未作相关性判断",
-                    },
-                )
-            return
-        reason = _basic_reason(state, article, _history(database))
+                return
+            _metric(state, "body_failed")
+            _save_result(
+                database,
+                state,
+                batch,
+                key,
+                {
+                    "error": "body_failed",
+                    "stage": "body",
+                    "reason": article.get("read_error") or "正文不完整，未作相关性判断",
+                },
+            )
+            continue
+        reason = _basic_reason(state, article, history)
         if reason:
             _save_result(
                 database, state, batch, key, {"error": reason, "reason": reason}
             )
-            return
+            continue
         if not candidate.get("body_confirmed"):
             candidate["body_confirmed"] = True
             _metric(state, "body_success")
-        stages = candidate.setdefault("stages", {})
-        saved_relevance = stages.get("relevance", {})
-        if saved_relevance.get("status") == "completed":
-            relevance = saved_relevance["result"]
-        else:
-            relevance = _run_model_stage(database, state, batch, key, "relevance")
-            if relevance is None:
-                return
-            if relevance["relevance"] != "irrelevant":
-                return
-        if relevance["relevance"] == "irrelevant":
-            result = {
-                "content_key": key,
-                "decision": "reject",
-                "reason": relevance["reason"],
-                "summary": None,
-                "rejection_stage": "relevance",
-            }
-        else:
-            saved_evaluation = stages.get("evaluation", {})
-            if saved_evaluation.get("status") == "completed":
-                result = saved_evaluation["result"]
-            else:
-                result = _run_model_stage(database, state, batch, key, "evaluation")
-                if result is None:
-                    return
-            if result["decision"] == "reject":
-                result = {**result, "rejection_stage": "preference"}
-        _metric(state, result["decision"])
-        _save_result(database, state, batch, key, result)
-        return
-    batch["status"] = "delivering"
+    run_pipeline(database, state, batch, shutdown=shutdown)
 
 
 def _register_batch(database, state, batch):
@@ -1379,12 +1254,15 @@ def _finish_batch(database, state, batch):
         in {"body_failed", "model_failed", "relevance_failed", "evaluation_failed"}
         for c in state["candidates"].values()
     )
+    retryable_anomalies = any(
+        c["status"] == "body_failed" for c in state["candidates"].values()
+    )
     request = state["request"]
     append_pending = (
         request["action"] == "append" and request["qualified"] < request["quantity"]
     )
     state.update(
-        status="exhausted" if exhausted and not anomalies else "waiting_user",
+        status="exhausted" if exhausted and not retryable_anomalies else "waiting_user",
         stop_reason="results_exhausted_with_errors"
         if exhausted and anomalies
         else "results_exhausted"
@@ -1396,7 +1274,7 @@ def _finish_batch(database, state, batch):
     _notify(database, state, batch)
 
 
-def step(database, scan_id):
+def step(database, scan_id, *, shutdown=None):
     """One bounded unit under the caller's scan lock; successful work is reusable."""
     from .zhihu_scan import get_scan
     from .zhihu_semantics import rewrite_topic
@@ -1492,7 +1370,7 @@ def step(database, scan_id):
             )
             if batch:
                 if batch["status"] == "evaluating":
-                    _evaluate(database, state, batch)
+                    _evaluate(database, state, batch, shutdown=shutdown)
                 else:
                     _finish_batch(database, state, batch)
             else:
@@ -1613,6 +1491,8 @@ def summary(state):
                     "params",
                     "metrics",
                     "model_usage",
+                    "sol_queue",
+                    "pipeline",
                     "started_at",
                     "completed_at",
                     "status",
@@ -1689,6 +1569,27 @@ def export_report(state):
             f"{batch['params']['evaluation_batch_size']} | {rate(passed, evaluated)} | "
             f"{sent} | {rate(likes, labelled)} | {rate(labelled, sent) if labelled else '暂无数据'} |"
         )
+    measured_batches = [b for b in state["batches"] if b.get("pipeline")]
+    if measured_batches:
+        rows.extend(
+            [
+                "",
+                "## 并行工作流",
+                "",
+                "每批最多 32 篇，Luna 2 路、Sol 1 路。队列峰值包含正在处理的 Sol 内容。",
+                "单篇模型失败记录后跳过，继续时不重试。实际运行耗时不含暂停等待用户的时间。",
+                "",
+                "| 批次 | 流水线实际运行（秒） | Luna 并发峰值 | Sol 并发峰值 | Sol 队列峰值 |",
+                "|---|---|---|---|---|",
+            ]
+        )
+        for batch in measured_batches:
+            pipeline = batch["pipeline"]
+            rows.append(
+                f"| {batch['number']} | {pipeline.get('active_seconds', 0):.3f} | "
+                f"{pipeline.get('relevance_peak', 0)} | {pipeline.get('evaluation_peak', 0)} | "
+                f"{pipeline.get('queue_peak', 0)} |"
+            )
     rows.extend(
         [
             "",
@@ -1714,7 +1615,7 @@ def export_report(state):
             "",
             "## 模型实际用量",
             "",
-            "| 模型 | 推理档位 | 服务档位 | 调用次数 | 耗时（秒） | 已取得 token 用量 | 未取得用量的调用 |",
+            "| 模型 | 推理档位 | 服务档位 | 调用次数 | 累计请求耗时（秒） | 已取得 token 用量 | 未取得用量的调用 |",
             "|---|---|---|---|---|---|---|",
         ]
     )

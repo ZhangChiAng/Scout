@@ -67,8 +67,11 @@ Fast 由共享 Codex 运行时使用 priority 服务档位。相关性单独读�
 页面和游标，新写法从第一页开始。可靠完整正文直接复用，缺失时经本机采集器获取。
 候选按赞数、发布时间及稳定身份排序，按自身发布时间检查窗口；文章和回答分别按内容 ID 去重。
 
-默认每批 8 篇候选，可调整为 1–32；当前轮次配置为 16。每次只调整一个参数。
-本批冻结偏好版本，完成后等待反馈及明确继续。反馈训练未完成时不开始下一批，训练成功后
+默认每批 32 篇候选，可调整为 1–32。每次只调整一个规模参数。
+每次请求仍为一篇正文，2 路 Luna 并行判断；相关或有依据的不确定结果保存成功后立即进入
+SQLite 中的本批 Sol 队列，由 1 路 Sol 按入队顺序处理，无需等待 Luna 全部结束。
+批次拥有一个共享 Codex 会话，认证锁由会话所有者持有，请求按独立 thread/turn 分发和取消。
+本批冻结候选顺序和偏好版本，全部处理结束后按原顺序发送飞书，完成后等待反馈及明确继续。反馈训练未完成时不开始下一批，训练成功后
 仍需明确继续。候选数不等于 Luna 调用数：正文失败的候选不进入模型，也不计为不推荐。
 
 ```toml
@@ -76,7 +79,7 @@ Fast 由共享 Codex 运行时使用 priority 服务档位。相关性单独读�
 search_latest_pages_per_advance = 1
 search_general_pages_per_advance = 1
 question_pages_per_advance = 1
-evaluation_batch_size = 8
+evaluation_batch_size = 32
 model_request_size = 1
 ```
 
@@ -90,13 +93,19 @@ model_request_size = 1
 .venv/bin/python -m scout.zhihu status --run-id <扫描UUID>
 .venv/bin/python -m scout.zhihu scan --topic-id <话题ID>
 .venv/bin/python -m scout.zhihu continue --run-id <扫描UUID>
-.venv/bin/python -m scout.zhihu continue --run-id <扫描UUID> --parameter evaluation_batch_size --value 16
+.venv/bin/python -m scout.zhihu continue --run-id <扫描UUID> --parameter evaluation_batch_size --value 32
 .venv/bin/python -m scout.zhihu stop --run-id <扫描UUID>
 ```
 
 `append --quantity N` 指定新增合格结果目标，仍逐批等待反馈和明确继续。没有每日自动扫描。
 `scan --run-id` 恢复当前状态；`retry-cards` 重试失败卡片。恢复复用成功模型阶段及固定发送 UUID。
 正文、相关性、摘要／偏好、采集和发送失败分别记录，不将失败记作不推荐。
+单篇 Luna 或 Sol 失败保存为终态，其他内容继续处理；点击继续也不重试模型失败项。
+认证失效、额度限制、配置错误或共享连接故障暂停新任务派发，已完成阶段保留。
+停止时至多一秒内停止派发，已发请求收尾落库；服务关闭中断在途请求。
+重启仅恢复未完成任务与队列，明确失败项跳过。进程中断且未取得结果的请求可能重新执行。
+本批队列包括正在执行的 Sol 任务，最多 32 项；结果成功或失败落库后移除。
+汇总分别记录模型累计请求耗时、流水线实际运行耗时、Luna/Sol 并发峰值和队列峰值。
 
 当前轮次 `c5155a75-7389-5456-8b3f-1d6eff8099d1` 保持等待用户继续。查询、游标、候选、
 反馈、发送去重及消息绑定均保留；已纠正的三条 Astra 判断以无关结论为准。
@@ -110,5 +119,5 @@ SQLite 保留当前有效偏好及依据、内容和来源、当前判断、阶�
 
 不编写单元或模拟测试。实际核验使用真实模型、知乎、SQLite 和飞书；当前已验证相关性与摘要
 分工、必填理由、偏好更新、逐批暂停、发送及 Astra 误判复核。新查询变体搜索贡献与模型阶段
-失败后的恢复仍需后续真实场景覆盖。代码清理以静态检查、真实数据库完整性及引用检查验收，
+失败后的跳过、2 路 Luna 与 1 路 Sol 并发及中断恢复仍需后续真实场景覆盖。代码清理以静态检查、真实数据库完整性及引用检查验收，
 不为验收构造反馈或自动开始新批次。

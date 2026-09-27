@@ -332,7 +332,7 @@ class ZhihuActionHandler:
                 ):
                     raise FeedbackError("参数值需为 1–100 的整数")
                 parameter_value = int(raw_parameter_value)
-                maximum = 8 if parameter_name == "evaluation_batch_size" else 100
+                maximum = 32 if parameter_name == "evaluation_batch_size" else 100
                 if not 1 <= parameter_value <= maximum:
                     raise FeedbackError(f"参数值需为 1–{maximum} 的整数")
                 overrides = {parameter_name: parameter_value}

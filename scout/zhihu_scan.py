@@ -37,12 +37,14 @@ class ZhihuScanWorker:
     def close(self) -> None:
         self.stop.set()
         if self.thread.is_alive():
-            self.thread.join(timeout=5)
+            # Allow slot cancellation (including a late turn/start response) and
+            # shared-session cleanup to finish before this daemon thread exits.
+            self.thread.join(timeout=20)
 
     def _run(self) -> None:
         while not self.stop.is_set():
             try:
-                resume_pending(self.path)
+                resume_pending(self.path, shutdown=self.stop)
             except Exception as exc:  # noqa: BLE001 - resume on next iteration
                 logger.warning("Zhihu task recovery failed: %s", type(exc).__name__)
             self.stop.wait(5)
@@ -102,7 +104,7 @@ def _record(client, state, raw):
     return article
 
 
-def resume_pending(database_path):
+def resume_pending(database_path, *, shutdown=None):
     """Collection and delivery share recovery between CLI and listener."""
     if not Path(database_path).exists():
         return
@@ -110,7 +112,7 @@ def resume_pending(database_path):
         from .zhihu_workflow import work
 
         work(database_path)
-        _resume_scan(database_path)
+        _resume_scan(database_path, shutdown=shutdown)
     finally:
         # Terminal scans still have durable links to finish after a restart.
         zhihu_delivery.recover(database_path)
@@ -163,7 +165,7 @@ def export_report(state):
     return semantic_report(state)
 
 
-def _resume_scan(database_path):
+def _resume_scan(database_path, *, shutdown=None):
     from .zhihu_semantic_scan import step
 
     path = Path(database_path)
@@ -180,6 +182,6 @@ def _resume_scan(database_path):
                 ORDER BY created_at LIMIT 1""").fetchone()
         if row:
             try:
-                step(path, row[0])
+                step(path, row[0], shutdown=shutdown)
             except RunLockedError:
                 return

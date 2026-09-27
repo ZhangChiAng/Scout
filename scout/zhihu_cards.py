@@ -12,7 +12,7 @@ TOPICS_PER_PAGE = 6
 FILTERED_PER_PAGE = 6
 TIME_RANGES = {"30d": "近 30 天"}
 TRIAL_PARAMETERS = {
-    "evaluation_batch_size": ("每批评价候选数", 8),
+    "evaluation_batch_size": ("每批评价候选数", 32),
     "search_latest_pages_per_advance": ("每词最新搜索推进页数", 1),
     "search_general_pages_per_advance": ("每词综合搜索推进页数", 1),
     "question_pages_per_advance": ("每题回答推进页数", 1),
@@ -128,7 +128,7 @@ def build_management_card(
     offset = max(0, offset)
     elements = [
         _markdown(
-            f"主动开始扫描 · 每轮固定近 30 天\n每批完成后等待反馈与明确继续，首批最多评价 8 篇。\n{_progress(learning)}"
+            f"主动开始扫描 · 每轮固定近 30 天\n每批完成后等待反馈与明确继续，每批默认评价 32 篇。\n{_progress(learning)}"
         ),
         _actions(
             _button("新增话题", "topic_new", style="primary"),
@@ -234,7 +234,7 @@ def build_topic_form_card(
     reference = {"topic_id": topic["id"]} if topic else {}
     elements = [
         _markdown(
-            "**发布时间：近 30 天**\n描述你关注的内容。每批默认处理 8 篇，可调整至 32 篇，先按完整正文判断相关性，再为准备发送的内容生成摘要；本批完成后等待你反馈并明确继续。"
+            "**发布时间：近 30 天**\n描述你关注的内容。每批默认处理 32 篇，可调整为 1–32 篇，先按完整正文判断相关性，再为准备发送的内容生成摘要；本批完成后等待你反馈并明确继续。"
         ),
         {
             "tag": "form",
@@ -544,7 +544,7 @@ def build_parameter_form_card(
             _markdown(
                 "一次只修改一项，便于比较前后批次。先等待最新反馈完成归纳，再应用参数并明确继续一批。\n\n**当前参数**\n"
                 + current
-                + "\n工程初值：每批 8 篇，可调整至 32 篇，每词最新、综合各 1 页，每题回答 1 页。"
+                + "\n工程初值：每批 32 篇，可调整为 1–32 篇，每词最新、综合各 1 页，每题回答 1 页。"
             ),
             _markdown(
                 "调整搜索或同题页数时，下一批会先按调整后的规模推进一次采集，再合并排序。调整评价篇数时，使用当前候选池；候选不足再推进采集。"
@@ -606,7 +606,7 @@ def _model_usage_text(usage: dict) -> str:
         lines.append(
             f"**{_md_escape(str(model))}**"
             + (f" · {_md_escape(settings)}" if settings else "")
-            + f"\n调用 {metrics.get('calls', 0)} 次 · 耗时 {metrics.get('duration_seconds', 0):.1f} 秒"
+            + f"\n调用 {metrics.get('calls', 0)} 次 · 累计请求耗时 {metrics.get('duration_seconds', 0):.1f} 秒"
         )
         usage_tokens = metrics.get("token_usage")
         if usage_tokens is not None:
@@ -687,7 +687,7 @@ def build_batch_summary_card(
         "target_reached": "本次追加已达到指定下限",
         "batch_completed": "本批已完成，等待决定是否继续",
         "results_exhausted": "搜索和已发现问题的分页均已实际耗尽",
-        "results_exhausted_with_errors": "当前可处理结果已用完，仍有异常内容待复核或重试",
+        "results_exhausted_with_errors": "当前可处理结果已用完，异常记录可复核；模型失败项不重试",
         "append_pending": "尚未达到追加下限，等待本批反馈与明确继续",
         "append_waiting_user": "尚未达到追加下限，等待本批反馈与明确继续",
         "feedback_update_pending": "等待最新反馈归纳成功后明确继续",
@@ -782,6 +782,20 @@ def build_batch_summary_card(
     if model_usage:
         elements.append(
             _markdown("**模型实际开销**\n" + _model_usage_text(model_usage))
+        )
+    pipeline = batch.get("pipeline") if batch else None
+    if pipeline:
+        active = pipeline.get("active", {})
+        elements.append(
+            _markdown(
+                "**并行处理**\nLuna 最多 2 路 · Sol 最多 1 路\n"
+                f"当前 Luna {active.get('relevance', 0)} · Sol {active.get('evaluation', 0)} · "
+                f"Sol 等待 {max(0, len(batch.get('sol_queue', [])) - active.get('evaluation', 0))} 篇\n"
+                f"并发峰值：Luna {pipeline.get('relevance_peak', 0)} · Sol {pipeline.get('evaluation_peak', 0)} · "
+                f"Sol 队列峰值 {pipeline.get('queue_peak', 0)} 篇（含处理中）\n"
+                f"流水线实际运行 {pipeline.get('active_seconds', 0):.1f} 秒\n"
+                "单篇模型失败已跳过，继续时不重试。"
+            )
         )
     if learning is not None:
         elements.append(_markdown(_progress(learning)))

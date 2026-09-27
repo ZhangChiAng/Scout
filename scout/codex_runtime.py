@@ -15,6 +15,7 @@ from typing import Self
 
 from openai_codex import CodexConfig, JsonRpcError
 from openai_codex.async_client import AsyncCodexClient
+from openai_codex.errors import CodexError, TransportClosedError
 from openai_codex.generated.v2_all import ConfigReadResponse, MessagePhase
 from openai_codex.types import ModelListResponse, TurnStatus
 
@@ -157,6 +158,9 @@ class CodexSession:
         self.cwd: str | None = None
         self._resources = ExitStack()
         self._start_task: asyncio.Task | None = None
+        self.validated_models: set[tuple[str, str]] = set()
+        self.pending_turn_starts: set[asyncio.Task] = set()
+        self.unusable = False
 
     async def open(self) -> AsyncCodexClient:
         if self.client is not None:
@@ -226,10 +230,18 @@ class CodexSession:
                         await self._start_task
                 if self.client is not None:
                     await self.client.close()
+                # Closing the transport releases SDK response waiters, including
+                # turn/start requests whose callers timed out before receiving IDs.
+                if self.pending_turn_starts:
+                    await asyncio.gather(
+                        *self.pending_turn_starts, return_exceptions=True
+                    )
             finally:
                 self.client = None
                 self._start_task = None
                 self.metadata = None
+                self.validated_models.clear()
+                self.pending_turn_starts.clear()
                 try:
                     self._secure_credentials()
                 finally:
@@ -261,6 +273,10 @@ def model_error(error: object) -> LLMError:
     """Classify SDK errors without exposing server messages or credentials."""
     if isinstance(error, LLMError):
         return error
+    if isinstance(error, TransportClosedError):
+        return ModelUnavailableError(
+            "Codex connection closed; unfinished work is saved."
+        )
     details = (
         error.model_dump(mode="json", by_alias=True)
         if hasattr(error, "model_dump")
@@ -318,18 +334,33 @@ def model_error(error: object) -> LLMError:
 
 
 class CodexRuntime:
-    def __init__(self, model: str, reasoning_effort: str) -> None:
+    def __init__(
+        self, model: str, reasoning_effort: str, *, session: CodexSession | None = None
+    ) -> None:
         self.model = model
         self.reasoning_effort = reasoning_effort
-        self._session: CodexSession | None = None
+        self._session = session
+        self._owns_session = session is None
+        self._validated = False
         self._request_lock = asyncio.Lock()
         self._turn: tuple[str, str] | None = None
+        self._turn_start: asyncio.Task | None = None
+        self._thread_id: str | None = None
 
     async def _ready(self) -> AsyncCodexClient:
-        if self._session is not None:
+        if self._session is not None and self._session.unusable:
+            raise ModelUnavailableError(
+                "Codex session requires shutdown before recovery."
+            )
+        if self._validated and self._session is not None:
             return self._session.client
-        self._session = CodexSession()
+        if self._session is None:
+            self._session = CodexSession()
         client = await self._session.open()
+        identity = (self.model, self.reasoning_effort)
+        if identity in self._session.validated_models:
+            self._validated = True
+            return client
         require_chatgpt(await client.account_read({"refreshToken": False}))
         catalog = await client.model_list()
         while True:
@@ -355,20 +386,53 @@ class CodexRuntime:
                 {"cursor": catalog.next_cursor},
                 response_model=ModelListResponse,
             )
+        self._validated = True
+        self._session.validated_models.add(identity)
         return client
 
+    async def prepare(self) -> None:
+        """Validate a slot before its owner dispatches durable business tasks."""
+        try:
+            async with asyncio.timeout(MODEL_TIMEOUT_SECONDS):
+                await self._ready()
+        except Exception as exc:
+            error = model_error(exc)
+            if error is exc:
+                raise
+            raise error from exc
+
     async def close(self) -> None:
-        session, self._session = self._session, None
+        session = self._session
         self._turn = None
-        if session is not None:
+        self._turn_start = None
+        self._thread_id = None
+        if self._owns_session and session is not None:
+            self._session = None
+            self._validated = False
             await session.close()
 
-    async def _interrupt_and_close(self) -> None:
+    async def _interrupt_and_close(self, telemetry: dict | None = None) -> None:
         try:
+            # turn/start can finish after its asyncio waiter is cancelled. Retain
+            # the response so a late remote turn cannot escape interruption.
+            if self._turn_start is not None and self._turn is None:
+                try:
+                    async with asyncio.timeout(INTERRUPT_TIMEOUT_SECONDS):
+                        started = await asyncio.shield(self._turn_start)
+                    self._turn = (self._thread_id, started.turn.id)
+                    if telemetry is not None:
+                        telemetry["calls"] = 1
+                except TimeoutError:
+                    self._session.unusable = True
+                except (CodexError, OSError, ValueError) as exc:
+                    LOGGER.debug("Codex turn/start cleanup: %s", type(exc).__name__)
             if self._turn is not None and self._session is not None:
-                with suppress(Exception):
+                try:
                     async with asyncio.timeout(INTERRUPT_TIMEOUT_SECONDS):
                         await self._session.client.turn_interrupt(*self._turn)
+                except CodexError, OSError, ValueError:
+                    self._session.unusable = True
+                self._session.client.unregister_turn_notifications(self._turn[1])
         finally:
             await self.close()
 
@@ -430,15 +494,24 @@ class CodexRuntime:
                         raise ModelUnavailableError(
                             "Codex changed the requested model, reasoning effort, provider, or permission settings."
                         )
-                    turn = await client.turn_start(
-                        thread.thread.id,
-                        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-                        {
-                            "effort": self.reasoning_effort,
-                            "outputSchema": schema,
-                            "serviceTierForTurn": "priority",
-                        },
+                    self._thread_id = thread.thread.id
+                    self._turn_start = asyncio.create_task(
+                        client.turn_start(
+                            thread.thread.id,
+                            json.dumps(
+                                payload, ensure_ascii=False, separators=(",", ":")
+                            ),
+                            {
+                                "effort": self.reasoning_effort,
+                                "outputSchema": schema,
+                                "serviceTierForTurn": "priority",
+                            },
+                        )
                     )
+                    self._session.pending_turn_starts.add(self._turn_start)
+                    turn = await asyncio.shield(self._turn_start)
+                    self._session.pending_turn_starts.discard(self._turn_start)
+                    self._turn_start = None
                     metrics["calls"] = 1
                     self._turn = (thread.thread.id, turn.turn.id)
                     output = await self._collect(client, turn.turn.id, metrics)
@@ -453,18 +526,26 @@ class CodexRuntime:
                     return data
             except asyncio.CancelledError:
                 outcome = "cancelled"
-                await self._interrupt_and_close()
+                await self._interrupt_and_close(metrics)
                 raise
             except TimeoutError as exc:
                 outcome = "timeout"
-                await self._interrupt_and_close()
+                await self._interrupt_and_close(metrics)
+                if self._session is not None and self._session.unusable:
+                    raise ModelUnavailableError(
+                        "Codex timed out before cancellation could be confirmed."
+                    ) from exc
                 raise LLMError(
                     f"Codex request exceeded {MODEL_TIMEOUT_SECONDS} seconds."
                 ) from exc
             except Exception as exc:
                 error = model_error(exc)
                 outcome = type(error).__name__
-                await self._interrupt_and_close()
+                await self._interrupt_and_close(metrics)
+                if self._session is not None and self._session.unusable:
+                    error = ModelUnavailableError(
+                        "Codex cancellation failed; the shared session must close."
+                    )
                 if error is exc:
                     raise
                 raise error from exc

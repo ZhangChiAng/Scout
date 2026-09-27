@@ -70,17 +70,46 @@ def _measured(operation):
     return measured
 
 
+def _measured_async(operation):
+    @wraps(operation)
+    async def measured(*args, telemetry=None, **kwargs):
+        metrics = telemetry if telemetry is not None else {}
+        metrics.update(calls=0, token_usage=None, outcome="started")
+        started = time.monotonic()
+        try:
+            result = await operation(*args, telemetry=metrics, **kwargs)
+        except BaseException as exc:
+            if metrics.get("outcome") == "completed":
+                metrics["outcome"] = "validation_failed"
+            elif metrics.get("outcome") == "started":
+                metrics["outcome"] = type(exc).__name__
+            raise
+        else:
+            metrics["outcome"] = "completed"
+            return result
+        finally:
+            metrics["duration_seconds"] = round(time.monotonic() - started, 3)
+
+    return measured
+
+
 async def _request(
-    name, schema, instructions, payload, models_path, telemetry, config_section
+    name,
+    schema,
+    instructions,
+    payload,
+    models_path,
+    telemetry,
+    config_section="model",
+    *,
+    runtime=None,
 ):
-    config = load_required_model_config(models_path, section=config_section)
-    telemetry.update(
-        model=config.model,
-        reasoning_effort=config.reasoning_effort,
-        service_tier="priority",
-        speed="fast",
-    )
-    runtime = CodexRuntime(model=config.model, reasoning_effort=config.reasoning_effort)
+    owned = runtime is None
+    if owned:
+        config = load_required_model_config(models_path, section=config_section)
+        runtime = CodexRuntime(
+            model=config.model, reasoning_effort=config.reasoning_effort
+        )
     try:
         return await runtime.request_json(
             name=name,
@@ -90,7 +119,8 @@ async def _request(
             telemetry=telemetry,
         )
     finally:
-        await runtime.close()
+        if owned:
+            await runtime.close()
 
 
 def _call(
@@ -166,9 +196,46 @@ def _content(article):
     }
 
 
-@_measured
-def classify_relevance(
-    topic, article, *, models_path: str | Path = "models.toml", telemetry=None
+def classify_relevance(topic, article, *, models_path="models.toml", telemetry=None):
+    return asyncio.run(
+        classify_relevance_async(
+            topic,
+            article,
+            models_path=models_path,
+            telemetry=telemetry,
+        )
+    )
+
+
+def evaluate_content(
+    topic,
+    preference,
+    article,
+    *,
+    relevance,
+    models_path="models.toml",
+    telemetry=None,
+):
+    return asyncio.run(
+        evaluate_content_async(
+            topic,
+            preference,
+            article,
+            relevance=relevance,
+            models_path=models_path,
+            telemetry=telemetry,
+        )
+    )
+
+
+@_measured_async
+async def classify_relevance_async(
+    topic,
+    article,
+    *,
+    models_path: str | Path = "models.toml",
+    telemetry=None,
+    runtime=None,
 ):
     """Use Luna only for identity, substantive relevance and a brief reason."""
     content = _content(article)
@@ -183,7 +250,7 @@ def classify_relevance(
             "reason": _string(1200),
         }
     )
-    result = _call(
+    result = await _request(
         "zhihu_content_relevance_v3",
         schema,
         "你只判断知乎内容与原始话题的实质相关性，不评价内容质量或用户是否喜欢，不生成摘要。"
@@ -209,6 +276,7 @@ def classify_relevance(
         models_path,
         telemetry,
         config_section="zhihu_relevance",
+        runtime=runtime,
     )
     if set(result) != {"content_key", "relevance", "reason"}:
         raise LLMError("知乎相关性输出字段不完整或包含额外内容")
@@ -225,8 +293,8 @@ def classify_relevance(
     }
 
 
-@_measured
-def evaluate_content(
+@_measured_async
+async def evaluate_content_async(
     topic,
     preference,
     article,
@@ -234,6 +302,7 @@ def evaluate_content(
     relevance,
     models_path: str | Path = "models.toml",
     telemetry=None,
+    runtime=None,
 ):
     """Summarize relevant content; filter only against actual preferences."""
     content = _content(article)
@@ -263,7 +332,7 @@ def evaluate_content(
             else _string(3000),
         }
     )
-    result = _call(
+    result = await _request(
         "zhihu_content_summary_preferences_v2",
         schema,
         "你为单一所有者生成知乎全文摘要，并且仅在存在真实反馈形成的 preferences 时评价偏好匹配。"
@@ -289,6 +358,7 @@ def evaluate_content(
         },
         models_path,
         telemetry,
+        runtime=runtime,
     )
     if set(result) != {"content_key", "decision", "reason", "summary"}:
         raise LLMError("知乎评价输出字段不完整或包含额外来源信息")

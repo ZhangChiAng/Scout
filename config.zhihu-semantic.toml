@@ -3,5 +3,5 @@
 search_latest_pages_per_advance = 1
 search_general_pages_per_advance = 1
 question_pages_per_advance = 1
-evaluation_batch_size = 8
+evaluation_batch_size = 32
 model_request_size = 1
