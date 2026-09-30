@@ -59,7 +59,7 @@ def delivery_summary(database, scan_id):
 def reset_failed(database, scan_id):
     with sender_lock(database), transaction(database) as conn:
         conn.execute(
-            "UPDATE zhihu_link_deliveries SET status='pending',attempts=0,retry_at=0,last_error='' WHERE scan_id=? AND (status='failed' OR (status='sending' AND attempts>=3))",
+            "UPDATE zhihu_link_deliveries SET status='pending',attempts=0,retry_at=0,last_error='' WHERE scan_id=? AND last_error!='zhihu_content_v1_upgrade' AND (status='failed' OR (status='sending' AND attempts>=3))",
             (scan_id,),
         )
 
@@ -93,6 +93,27 @@ def _recover(database):
 
         if stop_requested(database, row["scan_id"]):
             continue
+        # Quota is enforced at the sender as well as admission. A new smaller
+        # append request can leave previously reserved rows for a later continue.
+        with closing(connect(database, read_only=True)) as conn:
+            saved = conn.execute(
+                "SELECT state_json FROM zhihu_scans WHERE id=?", (row["scan_id"],)
+            ).fetchone()
+            state = json.loads(saved[0]) if saved else {}
+            if state.get("schema_version") != 5:
+                continue
+            request = state.get("request", {})
+            baseline = set(request.get("baseline_keys", []))
+            keys = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT article_key FROM zhihu_link_deliveries WHERE scan_id=? ORDER BY position",
+                    (row["scan_id"],),
+                )
+                if r[0] not in baseline
+            ]
+            if row["article_key"] not in keys[: request.get("quantity", 5)]:
+                continue
         if row["retry_at"] > time.time():
             continue
         if row["attempts"] >= 3:

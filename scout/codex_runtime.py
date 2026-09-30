@@ -291,6 +291,11 @@ def model_error(error: object) -> LLMError:
         details = {"code": error.code, "data": error.data, "message": error.message}
     text = (json.dumps(details, default=str) + " " + str(error)).lower()
     compact = text.replace("_", "").replace(" ", "")
+    if "modelisnotsupportedwhenusingcodexwithachatgptaccount" in compact:
+        return ModelUnavailableError(
+            "The requested model is not supported with this ChatGPT account "
+            "through the current Codex client."
+        )
     if any(
         value in compact
         for value in (
@@ -569,7 +574,8 @@ class CodexRuntime:
                 await self._interrupt_and_close(metrics)
                 if self._session is not None and self._session.unusable:
                     error = ModelUnavailableError(
-                        "Codex cancellation failed; the shared session must close."
+                        f"{error} Codex cancellation also failed; "
+                        "the shared session must close."
                     )
                 if error is exc:
                     raise

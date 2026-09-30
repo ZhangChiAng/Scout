@@ -44,6 +44,7 @@ from .notifier import (
 from .reveal import RevealWorker
 from .storage import FeedbackError, SQLiteStorage
 from .zhihu_actions import ZhihuActionHandler
+from .zhihu_messages import ZhihuMessageDeliveryWorker, ZhihuMessageHandler, bot_open_id
 from .zhihu_scan import ZhihuScanWorker
 
 
@@ -240,6 +241,9 @@ def listen_feedback(
     max_payload_bytes: int,
     timeout_seconds: float,
 ) -> None:
+    if delivery.receive_id_type != "chat_id":
+        raise FeedbackListenerError("群消息入口需要配置飞书群 chat_id")
+    identity = bot_open_id(delivery, timeout_seconds)
     storage = SQLiteStorage(database_path)
     storage.initialize()
     worker = RevealWorker(
@@ -253,9 +257,18 @@ def listen_feedback(
         max_payload_bytes=max_payload_bytes,
         wake_reveal=worker.wake.set,
     )
+    receipt_worker = ZhihuMessageDeliveryWorker(database_path)
+    messages = ZhihuMessageHandler(
+        database_path,
+        chat_id=delivery.receive_id,
+        bot_id=identity,
+        max_payload_bytes=max_payload_bytes,
+        wake=receipt_worker.wake.set,
+    )
     dispatcher = (
         lark.EventDispatcherHandler.builder("", "", lark.LogLevel.ERROR)
         .register_p2_card_action_trigger(callback)
+        .register_p2_im_message_receive_v1(messages)
         .build()
     )
     client = _CardCompatibleWSClient(
@@ -273,8 +286,10 @@ def listen_feedback(
     try:
         if scan_worker is not None:
             scan_worker.start()
+        receipt_worker.start()
         client.start()
     finally:
+        receipt_worker.close()
         if scan_worker is not None:
             scan_worker.close()
         worker.close()

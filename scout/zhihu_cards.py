@@ -4,24 +4,17 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from datetime import datetime
 
 from .notifier import _check_card_size, _link_url, _markdown, _md_escape
 
 TOPICS_PER_PAGE = 6
 FILTERED_PER_PAGE = 6
 TIME_RANGES = {"30d": "近 30 天"}
-TRIAL_PARAMETERS = {
-    "evaluation_batch_size": ("每批评价候选数", 32),
-    "search_latest_pages_per_advance": ("每词最新搜索推进页数", 1),
-    "search_general_pages_per_advance": ("每词综合搜索推进页数", 1),
-    "question_pages_per_advance": ("每题回答推进页数", 1),
-}
 FILTER_REASONS = {
     "not_recommended": "语义判断：不推荐",
     "reject": "语义判断：不推荐",
-    "irrelevant": "Luna 判断：与话题无关",
-    "preference_rejected": "Sol 判断：不符合已生效偏好",
+    "irrelevant": "相关性判断：与话题无关",
+    "preference_rejected": "内容评价：明确违背已生效偏好",
     "date_expired": "发布日期超出本轮近 30 天窗口",
     "date_unknown": "发布日期缺失或无法识别",
     "date_missing": "发布日期缺失",
@@ -30,8 +23,7 @@ FILTER_REASONS = {
     "body_incomplete": "未获取完整正文，暂不能判断",
     "body_failed": "正文读取失败",
     "model_failed": "模型判断失败，尚无推荐结论",
-    "relevance_failed": "Luna 相关性判断失败，尚无相关性结论",
-    "evaluation_failed": "Sol 摘要／偏好评价失败，已保存的相关性结论保留",
+    "content_failed": "内容评价失败，本篇未发送",
     "historical_delivered": "此前已送达",
     "delivery_reserved": "已在投递队列中",
     "not_evaluated": "尚未判断",
@@ -96,23 +88,23 @@ def _progress(learning: dict | None) -> str:
     )
     if not learning.get("ready"):
         text += (
-            "\n尚无有效偏好档案，先等已提交反馈归纳后再开始下一批。"
+            "\n尚无有效偏好档案，先按空偏好处理。"
             if has_feedback
             else "\n当前偏好为空，只判断话题相关性；相关内容直接推荐，质量标准等待真实反馈建立。"
         )
     training_status = learning.get("training_status")
     if training_status == "busy":
-        text += "\n偏好更新正在等待模型空闲，最新反馈生效后再开始下一批。"
+        text += "\n偏好更新正在等待模型空闲，当前使用已完成的偏好。"
     elif training_status == "failed" or learning.get("training_error"):
-        text += "\n偏好更新失败，上一有效版本保留。明确继续可重试更新；成功后再次明确继续，才开始下一批。"
+        text += "\n偏好更新失败，保留上一有效版本。"
     elif learning.get("training_pending") or training_status in {
         "pending",
         "running",
         "waiting",
     }:
-        text += "\n已提交反馈正在等待归纳；更新成功后请明确继续下一批。"
+        text += "\n已提交反馈正在等待归纳；继续使用当前有效偏好。"
     elif learning.get("ready"):
-        text += "\n当前有效反馈已归纳，明确继续后下一批使用此版本。"
+        text += "\n当前有效反馈已归纳，继续查找时使用最新已完成版本。"
     return text
 
 
@@ -128,7 +120,7 @@ def build_management_card(
     offset = max(0, offset)
     elements = [
         _markdown(
-            f"主动开始扫描 · 每轮固定近 30 天\n每批完成后等待反馈与明确继续，每批默认评价 32 篇。\n{_progress(learning)}"
+            f"主动开始扫描 · 每轮固定近 30 天\n逐条推送，成功送达 5 条后暂停；继续无需先反馈。\n{_progress(learning)}"
         ),
         _actions(
             _button("新增话题", "topic_new", style="primary"),
@@ -234,7 +226,7 @@ def build_topic_form_card(
     reference = {"topic_id": topic["id"]} if topic else {}
     elements = [
         _markdown(
-            "**发布时间：近 30 天**\n描述你关注的内容。每批默认处理 32 篇，可调整为 1–32 篇，先按完整正文判断相关性，再为准备发送的内容生成摘要；本批完成后等待你反馈并明确继续。"
+            "**发布时间：近 30 天**\n描述你关注的内容。逐篇判断相关性并生成摘要，送达 5 条后暂停，继续无需先反馈。"
         ),
         {
             "tag": "form",
@@ -280,16 +272,11 @@ def build_schedule_card(schedule: dict, *, max_payload_bytes: int = 30 * 1024) -
 def _content_elements(article: dict, reason: str = "") -> list[dict]:
     title = _md_escape(str(article.get("title") or "知乎内容")[:200])
     url = str(article.get("url") or "")
-    evaluation = (
-        article.get("evaluation")
-        or article.get("semantic_result")
-        or article.get("semantic")
-        or {}
-    )
-    relevance = article.get("relevance") or {}
-    summary = str(evaluation.get("summary") or article.get("summary") or "").strip()
-    decision = article.get("decision") or evaluation.get("decision")
-    explanation = article.get("decision_reason") or evaluation.get("reason")
+    evaluation = article.get("semantic") or {}
+    relevance = evaluation.get("relevance")
+    summary = str(evaluation.get("summary") or "").strip()
+    decision = evaluation.get("decision")
+    explanation = evaluation.get("reason")
     votes = article.get("voteup_count")
     elements = [
         _markdown(f"**{title}**"),
@@ -317,28 +304,40 @@ def _content_elements(article: dict, reason: str = "") -> list[dict]:
             "irrelevant": "明确无关",
             "uncertain": "相关性存疑",
         }
-        verdict = relevance.get("relevance", "")
-        text = f"**Luna 相关性**：{_md_escape(labels.get(verdict, str(verdict)))}"
-        if relevance.get("reason"):
-            text += f"\n{_md_escape(str(relevance['reason'])[:1500])}"
+        verdict = relevance
+        text = f"**相关性**：{_md_escape(labels.get(verdict, str(verdict)))}"
+        if evaluation.get("relevance_reason"):
+            text += f"\n{_md_escape(str(evaluation['relevance_reason'])[:1500])}"
         elements.append(_markdown(text))
-    if decision and (not relevance or article.get("evaluation")):
-        label = "Sol 摘要／偏好评价" if relevance else "语义判断"
+    if decision:
+        label = "最终评价"
         text = f"**{label}**：{_md_escape(DECISIONS.get(decision, str(decision)))}"
         if explanation:
             text += f"\n{_md_escape(str(explanation)[:1500])}"
         elements.append(_markdown(text))
-    for stage, label in (
-        ("relevance", "Luna 相关性"),
-        ("evaluation", "Sol 摘要／偏好评价"),
-    ):
-        saved = (article.get("stages") or {}).get(stage) or {}
-        if saved.get("status") == "failed":
-            attempts = saved.get("attempts") or []
-            error = (attempts[-1].get("error") if attempts else "") or "等待重试"
-            elements.append(
-                _markdown(f"**{label}失败**：{_md_escape(str(error)[:500])}")
+    saved = (article.get("stages") or {}).get("content") or {}
+    if saved.get("status") == "failed":
+        elements.append(
+            _markdown(
+                "**内容评价失败**："
+                + _md_escape(str(saved.get("error") or "本篇未发送")[:500])
             )
+        )
+    metrics = saved.get("telemetry", {})
+    if metrics:
+        elements.append(
+            _markdown(
+                f"**内容评价开销**：{_md_escape(str(metrics.get('model') or '未知模型'))} · "
+                f"{_md_escape(str(metrics.get('reasoning_effort') or ''))} · "
+                f"调用 {metrics.get('calls', 0)} 次 · {metrics.get('duration_seconds', 0):.1f} 秒\n"
+                + "token："
+                + _md_escape(
+                    json.dumps(metrics.get("token_usage"), ensure_ascii=False)
+                    if metrics.get("token_usage") is not None
+                    else "未提供"
+                )
+            )
+        )
     if url:
         elements.append(_markdown(f"[查看知乎原文]({_link_url(url)})"))
     if reason:
@@ -358,6 +357,7 @@ def build_content_card(
     feedback: dict | None = None,
     learning: dict | None = None,
     reason: str = "",
+    scan_id: str | None = None,
 ) -> dict:
     elements = _content_elements(article, reason)
     if learning is not None:
@@ -384,7 +384,13 @@ def build_content_card(
                 _button("不喜欢", "dislike", style="danger", snapshot_id=snapshot_id),
             )
         )
-    elements.append(_actions(_button("知乎话题管理", "manage", separate=True)))
+    if scan_id:
+        elements.append(
+            _actions(
+                _button("查看搜索进度", "scan_status", scan_id=scan_id),
+                _button("停止搜索", "scan_stop", scan_id=scan_id),
+            )
+        )
     return _card(
         f"Scout · {article.get('title') or '知乎内容'}", elements, max_payload_bytes
     )
@@ -410,7 +416,7 @@ def build_feedback_form_card(
     elements.extend(
         [
             _markdown(
-                f"请说明{sentiment}这篇内容的原因，填写后再提交。反馈用于归纳后续批次的语义偏好。"
+                f"请说明{sentiment}这篇内容的原因，填写后再提交。反馈用于归纳后续搜索的语义偏好。"
             ),
             {
                 "tag": "form",
@@ -448,7 +454,7 @@ def build_filtered_card(
     scope = "当前轮次" if scan_id else "全部保留轮次"
     elements = [
         _markdown(
-            f"范围：{scope}。查看不推荐、基础筛选及异常记录。有完整正文的内容可以补充或修改反馈，影响后续批次。"
+            f"范围：{scope}。查看不推荐、基础筛选及异常记录。有完整正文的内容可以补充或修改反馈，影响后续搜索。"
         )
     ]
     if not rows:
@@ -510,88 +516,20 @@ def build_append_form_card(scan_id: str, *, max_payload_bytes: int = 30 * 1024) 
         "知乎 · 指定追加数量",
         [
             _markdown(
-                "填写希望新增的合格内容下限。每次只处理一批，本批结束后等待你反馈并明确继续；当前批次多出的推荐及不确定内容一起发送，实际耗尽时报告缺口。"
+                "填写希望新增送达的数量。逐条推送，达到目标后暂停；搜索耗尽时报告实际送达数量。"
             ),
             {
                 "tag": "form",
                 "name": "zhihu_append",
                 "elements": [
-                    _input(
-                        "quantity", "本次新增合格内容至少多少篇", "例如：5", length=5
-                    ),
-                    _submit(
-                        "保存目标并处理一批", "scan_append_submit", scan_id=scan_id
-                    ),
+                    _input("quantity", "本次新增送达多少条", "例如：5", length=5),
+                    _submit("保存目标并继续", "scan_append_submit", scan_id=scan_id),
                 ],
             },
             _actions(_button("返回本轮状态", "scan_status", scan_id=scan_id)),
         ],
         max_payload_bytes,
     )
-
-
-def build_parameter_form_card(
-    scan: dict, *, max_payload_bytes: int = 30 * 1024
-) -> dict:
-    params = scan.get("params") or {}
-    current = "\n".join(
-        f"{label}：{params.get(name, initial)}"
-        for name, (label, initial) in TRIAL_PARAMETERS.items()
-    )
-    return _card(
-        "知乎 · 调整下一批参数",
-        [
-            _markdown(
-                "一次只修改一项，便于比较前后批次。先等待最新反馈完成归纳，再应用参数并明确继续一批。\n\n**当前参数**\n"
-                + current
-                + "\n工程初值：每批 32 篇，可调整为 1–32 篇，每词最新、综合各 1 页，每题回答 1 页。"
-            ),
-            _markdown(
-                "调整搜索或同题页数时，下一批会先按调整后的规模推进一次采集，再合并排序。调整评价篇数时，使用当前候选池；候选不足再推进采集。"
-            ),
-            {
-                "tag": "form",
-                "name": "zhihu_parameters",
-                "elements": [
-                    {
-                        "tag": "select_static",
-                        "name": "parameter_name",
-                        "required": True,
-                        "placeholder": {
-                            "tag": "plain_text",
-                            "content": "选择本次唯一要修改的参数",
-                        },
-                        "options": [
-                            {
-                                "text": {"tag": "plain_text", "content": label},
-                                "value": name,
-                            }
-                            for name, (label, _) in TRIAL_PARAMETERS.items()
-                        ],
-                    },
-                    _input(
-                        "parameter_value",
-                        "新的参数值（评价篇数 1–32，分页 1–100）",
-                        "填写一个正整数",
-                        length=3,
-                    ),
-                    _submit(
-                        "应用这一项并继续一批",
-                        "scan_parameters_submit",
-                        scan_id=scan["id"],
-                    ),
-                ],
-            },
-            _actions(_button("返回本轮状态", "scan_status", scan_id=scan["id"])),
-        ],
-        max_payload_bytes,
-    )
-
-
-def _rate(numerator: int, denominator: int, *, no_feedback: bool = False) -> str:
-    if denominator <= 0 or no_feedback:
-        return "暂无数据"
-    return f"{numerator / denominator:.1%}（{numerator}/{denominator}）"
 
 
 def _model_usage_text(usage: dict) -> str:
@@ -607,6 +545,10 @@ def _model_usage_text(usage: dict) -> str:
             f"**{_md_escape(str(model))}**"
             + (f" · {_md_escape(settings)}" if settings else "")
             + f"\n调用 {metrics.get('calls', 0)} 次 · 累计请求耗时 {metrics.get('duration_seconds', 0):.1f} 秒"
+        )
+        stages = metrics.get("stages", {})
+        lines.append(
+            f"内容评价 {stages.get('content', 0)} 次 · 搜索词提取 {stages.get('rewrite', 0)} 次"
         )
         usage_tokens = metrics.get("token_usage")
         if usage_tokens is not None:
@@ -632,283 +574,19 @@ def _model_usage_text(usage: dict) -> str:
     return "\n".join(lines)
 
 
-def build_batch_summary_card(
-    scan: dict,
-    batch: dict | None = None,
-    *,
-    latest_learning: dict | None = None,
-    max_payload_bytes: int = 30 * 1024,
-) -> dict:
-    """Durable summary shared by completed batches and on-demand scan status."""
-    batch = batch or {}
-    counts = dict(batch.get("stats") or batch.get("counts") or {})
-    for decision in (
-        "recommend",
-        "uncertain",
-        "reject",
-        "body_failed",
-        "model_failed",
-        "relevance_failed",
-        "evaluation_failed",
-    ):
-        counts[decision] = (
-            sum(
-                result.get("decision", result.get("error")) == decision
-                for result in batch.get("results", {}).values()
-            )
-            if batch.get("results")
-            else counts.get(decision, 0)
-        )
-    preference = batch.get("preference") or {}
-    learning = latest_learning if latest_learning is not None else scan.get("learning")
-    status_labels = {
-        "running": "进行中",
-        "waiting_user": "等待本批反馈与明确继续",
-        "waiting_preference": "等待最新反馈生效",
-        "stopped": "本轮已结束",
-        "exhausted": "结果实际耗尽",
-        "waiting_login": "等待知乎登录",
-        "waiting_model": "等待模型空闲",
-        "model_busy": "等待模型空闲",
-        "stopping": "正在停止，在途结果会保留",
-        "model_failed": "模型失败",
-        "collector_failed": "采集失败",
-        "processing_failed": "处理异常",
-        "delivery_failed": "发送失败",
-        "paused": "已暂停",
-        "completed": "已完成",
-        "failed": "失败",
-    }
-    stop_labels = {
-        "user_stop": "用户主动结束",
-        "stopped_by_user": "用户主动结束",
-        "batch_complete": "本批已完成，等待决定是否继续",
-        "exhausted": "搜索和已发现问题的分页均已实际耗尽",
-        "target_reached": "本次追加已达到指定下限",
-        "batch_completed": "本批已完成，等待决定是否继续",
-        "results_exhausted": "搜索和已发现问题的分页均已实际耗尽",
-        "results_exhausted_with_errors": "当前可处理结果已用完，异常记录可复核；模型失败项不重试",
-        "append_pending": "尚未达到追加下限，等待本批反馈与明确继续",
-        "append_waiting_user": "尚未达到追加下限，等待本批反馈与明确继续",
-        "feedback_update_pending": "等待最新反馈归纳成功后明确继续",
-        "feedback_required": "等待本批真实反馈与明确继续",
-        "preference_updated_continue_required": "最新反馈已生效，等待再次明确继续",
-        "preference_pending": "等待最新反馈完成归纳后明确继续",
-        "preference_failed": "偏好更新失败，恢复成功后再次明确继续",
-        "delivery_failed": "原发送队列有失败，继续时沿原队列重试",
-        "processing_failed": "处理异常，已有结果保留，修复后可继续",
-        "collector_failed": "采集失败，已有候选和分页进度保留",
-        "model_failed": "模型判断失败，已有结果保留",
-        "model_busy": "等待模型空闲，已有进度保留",
-        "waiting_login": "等待完成知乎登录，已有进度保留",
-    }
-    candidates = scan.get("candidates") or {}
-    candidate_rows = candidates.values() if isinstance(candidates, dict) else candidates
-    pending_candidates = sum(
-        row.get("status") in {"pending", "ready", "discovered"}
-        for row in candidate_rows
-    )
-    remaining_searches = sum(
-        not row.get("is_end", False) for row in scan.get("queries", [])
-    )
-    remaining_questions = sum(
-        not row.get("is_end", False) for row in (scan.get("questions") or {}).values()
-    )
-    coverage = scan.get("coverage_summary") or {}
-    topic = scan.get("topic") or scan.get("topic_snapshot") or {}
-    plan = scan.get("query_plan") or []
-    if isinstance(plan, dict):
-        plan = plan.get("search_terms") or plan.get("queries") or []
-    terms = list(
-        dict.fromkeys(
-            str(value.get("query") if isinstance(value, dict) else value)
-            for value in plan
-        )
-    )
-    terms_text = "，".join(terms)
-    if len(terms_text) > 2000:
-        terms_text = terms_text[:2000] + "…（完整查询计划已保存到本轮报告）"
-    batch_id = batch.get("number", batch.get("id", ""))
-    elements = [
-        _markdown(
-            f"**{_md_escape(topic.get('name') or '知乎话题')}** · 本轮近 30 天\n"
-            f"扫描状态：{_md_escape(str(scan.get('status_label') or status_labels.get(scan.get('status'), scan.get('status')) or '进行中'))}\n"
-            f"实际搜索词（{len(terms)} 个）：{_md_escape(terms_text or '等待转写')}"
-        )
-    ]
-    if batch:
-        elements.append(
-            _markdown(
-                f"**本批 {batch_id}** · {preference.get('label') or ('偏好 v' + str(preference.get('version') or batch.get('preference_version') or 0))}\n"
-                f"推荐 {counts.get('recommended', counts.get('recommend', 0))} · 不确定 {counts.get('uncertain', 0)} · 不推荐 {counts.get('not_recommended', counts.get('reject', 0))}\n"
-                f"正文异常 {counts.get('body_failed', 0)} · Luna 异常 {counts.get('relevance_failed', 0)} · Sol 异常 {counts.get('evaluation_failed', 0)}"
-                + "\n"
-                f"已发送 {counts.get('sent', counts.get('delivered', 0))} · 待发送 {counts.get('pending', counts.get('delivery_pending', 0))} · 发送失败 {counts.get('failed', counts.get('delivery_failed', 0))}"
-            )
-        )
-    if batch:
-        recommend = counts.get("recommend", counts.get("recommended", 0))
-        uncertain = counts.get("uncertain", 0)
-        reject = counts.get("reject", counts.get("not_recommended", 0))
-        evaluated = recommend + uncertain + reject
-        likes = counts.get("feedback_likes", 0)
-        dislikes = counts.get("feedback_dislikes", 0)
-        feedback_count = likes + dislikes
-        sent = counts.get("sent", counts.get("delivered", 0))
-        metrics = (
-            f"**本批反馈与效果**\n模型放行率：{_rate(recommend + uncertain, evaluated)}\n"
-            f"用户通过率：{_rate(likes, feedback_count)}\n"
-            f"反馈覆盖率：{_rate(feedback_count, sent, no_feedback=feedback_count == 0)}\n"
-            f"自动推送反馈：喜欢 {likes} · 不喜欢 {dislikes} · 实际送达 {sent}\n"
-            f"过滤复核反馈：喜欢 {counts.get('feedback_review_likes', 0)} · 不喜欢 {counts.get('feedback_review_dislikes', 0)}"
-        )
-        elements.append(_markdown(metrics))
-        elements.append(
-            _markdown(
-                "模型放行率按评价成功内容计算；用户通过率按已自动送达内容的当前反馈计算，反馈覆盖率按已反馈篇数除以实际送达篇数计算。过滤复核另列，未反馈不代表不喜欢。"
-            )
-        )
-        params = batch.get("params") or scan.get("params") or {}
-        elements.append(
-            _markdown(
-                "**本批实际参数**\n"
-                + " · ".join(
-                    f"{label} {params.get(name, initial)}"
-                    for name, (label, initial) in TRIAL_PARAMETERS.items()
-                )
-            )
-        )
-    model_usage = batch.get("model_usage") if batch else scan.get("model_usage")
-    if model_usage:
-        elements.append(
-            _markdown("**模型实际开销**\n" + _model_usage_text(model_usage))
-        )
-    pipeline = batch.get("pipeline") if batch else None
-    if pipeline:
-        active = pipeline.get("active", {})
-        elements.append(
-            _markdown(
-                "**并行处理**\nLuna 最多 2 路 · Sol 最多 1 路\n"
-                f"当前 Luna {active.get('relevance', 0)} · Sol {active.get('evaluation', 0)} · "
-                f"Sol 等待 {max(0, len(batch.get('sol_queue', [])) - active.get('evaluation', 0))} 篇\n"
-                f"并发峰值：Luna {pipeline.get('relevance_peak', 0)} · Sol {pipeline.get('evaluation_peak', 0)} · "
-                f"Sol 队列峰值 {pipeline.get('queue_peak', 0)} 篇（含处理中）\n"
-                f"流水线实际运行 {pipeline.get('active_seconds', 0):.1f} 秒\n"
-                "单篇模型失败已跳过，继续时不重试。"
-            )
-        )
-    if learning is not None:
-        elements.append(_markdown(_progress(learning)))
-    elements.append(
-        _markdown(
-            "本批完成后先查看并反馈内容，等反馈更新成功，再明确选择继续一批。追加目标尚未达到也会逐批等待。"
-        )
-    )
-    elements.append(
-        _markdown(
-            f"池中未处理：{coverage.get('pending_candidates', scan.get('pending_candidates', pending_candidates))} 篇\n"
-            f"尚可继续的搜索：{coverage.get('remaining_searches', remaining_searches)} 路 · 问题：{coverage.get('remaining_questions', remaining_questions)} 个\n"
-            "排序覆盖当前已发现候选，未覆盖全部知乎内容。"
-        )
-    )
-    if scan.get("stop_reason"):
-        elements.append(
-            _markdown(
-                f"本轮停止原因：{_md_escape(str(stop_labels.get(scan['stop_reason'], scan['stop_reason']))[:500])}"
-            )
-        )
-    if scan.get("last_error"):
-        error = scan["last_error"]
-        if isinstance(error, dict):
-            error_labels = {
-                "processing": "处理异常",
-                "processing_failed": "处理异常",
-                "protocol": "采集响应或完整性校验失败",
-                "network": "采集连接失败",
-                "http_error": "采集接口失败",
-                "collection": "采集任务失败",
-                "login": "知乎登录失效",
-                "authentication": "采集器认证失败",
-                "conflict": "采集请求参数冲突",
-                "missing": "采集任务不存在",
-                "model_busy": "模型繁忙",
-                "model_failed": "模型判断失败",
-                "relevance_failed": "Luna 相关性判断失败",
-                "evaluation_failed": "Sol 摘要／偏好评价失败",
-                "delivery_failed": "发送失败",
-                "preference_failed": "偏好更新失败",
-                "preference_pending": "等待最新反馈生效",
-                "preference_update": "偏好更新尚未完成",
-            }
-            label = error_labels.get(error.get("kind"), "处理异常")
-            message = error.get("message")
-            error = f"{label}：{message}" if message else label
-        elements.append(_markdown(f"当前异常：{_md_escape(str(error)[:500])}"))
-    append = scan.get("append_progress") or {}
-    request = scan.get("request") or {}
-    if not append and request.get("action") == "append":
-        append = {
-            "target": request.get("quantity", 0),
-            "qualified": request.get("qualified", 0),
-        }
-    if append:
-        elements.append(
-            _markdown(
-                f"本次追加下限 {append.get('target', 0)} 篇 · 已新增合格 {append.get('qualified', 0)} 篇 · 缺口 {max(0, append.get('target', 0) - append.get('qualified', 0))} 篇"
-            )
-        )
-    scan_id = scan["id"]
-    elements.append(
-        _actions(
-            _button("继续一批", "scan_continue", style="primary", scan_id=scan_id),
-            _button("指定追加数量", "scan_append", scan_id=scan_id),
-            _button("调整下一批参数", "scan_parameters", scan_id=scan_id),
-            _button("本轮够了", "scan_stop", scan_id=scan_id),
-        )
-    )
-    elements.append(
-        _actions(
-            _button("刷新本轮状态", "scan_status", scan_id=scan_id),
-            _button("查看未处理候选", "scan_pending", scan_id=scan_id),
-            _button(
-                "查看本轮不推荐及异常",
-                "filtered",
-                scan_id=scan_id,
-                **({"topic_id": topic["id"]} if topic.get("id") else {}),
-            ),
-            _button("话题管理", "manage"),
-        )
-    )
-    return _card("Scout · 知乎本批结果", elements, max_payload_bytes)
-
-
 def build_pending_card(
     scan: dict, *, offset: int = 0, max_payload_bytes: int = 30 * 1024
 ) -> dict:
-    """Show the saved pool in the same vote/date/identity order as evaluation."""
+    """Show pending candidates in discovery order."""
     pending = [
         (key, value["article"])
         for key, value in scan.get("candidates", {}).items()
         if value.get("status") == "pending"
     ]
 
-    def order(row):
-        key, article = row
-        votes = article.get("voteup_count")
-        if type(votes) is not int or votes < 0:
-            votes = None
-        try:
-            stamp = datetime.fromisoformat(
-                article.get("published_at") or ""
-            ).timestamp()
-        except ValueError, TypeError, OverflowError:
-            stamp = 0
-        return (votes is None, -(votes or 0), -stamp, key)
-
-    pending.sort(key=order)
     elements = [
         _markdown(
-            f"本轮保存了 {len(pending)} 篇未处理候选，按赞同数、发布时间和稳定身份排序。新候选加入后，下一评价批次会重新排序。"
+            f"本轮保存了 {len(pending)} 篇未处理候选，按发现顺序排列，页内保留知乎搜索排名。"
         )
     ]
     for key, article in pending[offset : offset + FILTERED_PER_PAGE]:
@@ -939,3 +617,101 @@ def build_pending_card(
     navigation.append(_button("返回本轮状态", "scan_status", scan_id=scan["id"]))
     elements.append(_actions(*navigation))
     return _card("知乎 · 未处理候选", elements, max_payload_bytes)
+
+
+def build_stream_card(scan: dict, *, max_payload_bytes: int = 30 * 1024) -> dict:
+    if scan.get("schema_version") != 5:
+        return _card(
+            "知乎 · 历史扫描",
+            [_markdown("旧扫描已终止，请重新发起搜索。")],
+            max_payload_bytes,
+        )
+    request = scan.get("request", {})
+    counts = scan.get("candidate_counts", {})
+    relevance = scan.get("relevance_counts", {})
+    labels = {
+        "running": "正在查找",
+        "waiting_user": "已达到目标，等待继续",
+        "stopped": "已停止",
+        "stopping": "正在停止",
+        "exhausted": "搜索结果已耗尽",
+        "delivery_failed": "发送失败，等待重试",
+        "waiting_login": "等待知乎登录",
+        "collector_failed": "采集异常",
+        "model_failed": "模型异常",
+        "model_busy": "模型繁忙",
+        "processing_failed": "处理异常",
+    }
+    elements = [
+        _markdown(
+            f"**{_md_escape(scan['topic']['name'])}**\n{labels.get(scan['status'], scan['status'])}\n"
+            f"已送达 **{request.get('qualified', 0)}/{request.get('quantity') or 5}** · 待发送 {request.get('pending', 0)} · 发送失败 {request.get('failed', 0)}"
+        ),
+        _markdown(
+            f"已搜索 {scan.get('metrics', {}).get('search_pages', 0)} 页 · 发现 {len(scan.get('candidates', {}))} 篇\n"
+            f"待处理 {counts.get('pending', 0)} · 推荐 {counts.get('recommend', 0)} · 不确定 {counts.get('uncertain', 0)} · 不推荐 {counts.get('reject', 0)}\n"
+            f"相关 {relevance.get('relevant', 0)} · 无关 {relevance.get('irrelevant', 0)} · 相关性存疑 {relevance.get('uncertain', 0)}\n"
+            f"单篇失败 {sum(counts.get(k, 0) for k in ('body_failed', 'content_failed'))}"
+        ),
+        _markdown(
+            "搜索词：" + "；".join(_md_escape(t) for t in scan.get("query_plan", []))
+        ),
+        _markdown(
+            "逐条推送，送达够数后暂停。最新和综合交替搜索，按搜索结果顺序处理；不确定内容会说明疑点。继续无需先反馈。"
+        ),
+    ]
+    preference = scan.get("stream", {}).get("preference", {})
+    elements.append(
+        _markdown(
+            f"本次固定偏好版本：{preference.get('version') or '空偏好'} · 同时评价 1 篇"
+        )
+    )
+    if scan.get("learning"):
+        elements.append(_markdown(_progress(scan["learning"])))
+    if request.get("first_delivery_seconds") is not None:
+        elements.append(
+            _markdown(f"本次首条送达耗时 {request['first_delivery_seconds']:.1f} 秒")
+        )
+    if request.get("target_delivery_seconds") is not None:
+        elements.append(
+            _markdown(f"本次达到目标耗时 {request['target_delivery_seconds']:.1f} 秒")
+        )
+    if scan.get("last_error"):
+        elements.append(
+            _markdown(
+                "当前异常："
+                + _md_escape(str(scan["last_error"].get("message", ""))[:500])
+            )
+        )
+    if scan.get("model_usage"):
+        elements.append(
+            _markdown("**模型开销**\n" + _model_usage_text(scan["model_usage"]))
+        )
+    if scan["status"] == "exhausted":
+        elements.append(
+            _markdown(
+                "各搜索词的最新和综合分页均已结束，当前候选已处理完；单篇失败内容未自动重试。"
+            )
+        )
+    elements.extend(
+        [
+            _actions(
+                _button(
+                    "继续查找", "scan_continue", style="primary", scan_id=scan["id"]
+                ),
+                _button("指定追加数量", "scan_append", scan_id=scan["id"]),
+                _button("停止", "scan_stop", scan_id=scan["id"]),
+            ),
+            _actions(
+                _button("刷新状态", "scan_status", scan_id=scan["id"]),
+                _button("未处理候选", "scan_pending", scan_id=scan["id"]),
+                _button(
+                    "不推荐及异常",
+                    "filtered",
+                    scan_id=scan["id"],
+                    topic_id=scan["topic"]["id"],
+                ),
+            ),
+        ]
+    )
+    return _card("Scout · 知乎搜索进度", elements, max_payload_bytes)

@@ -15,15 +15,13 @@ from .database import connect
 from .storage import FeedbackError
 from .zhihu_cards import (
     FILTERED_PER_PAGE,
-    TRIAL_PARAMETERS,
     build_append_form_card,
-    build_batch_summary_card,
     build_content_card,
     build_feedback_form_card,
     build_filtered_card,
     build_management_card,
-    build_parameter_form_card,
     build_pending_card,
+    build_stream_card,
     build_topic_form_card,
 )
 
@@ -42,8 +40,6 @@ KNOWN_ACTIONS = {
     "zhihu_scan_continue",
     "zhihu_scan_append",
     "zhihu_scan_append_submit",
-    "zhihu_scan_parameters",
-    "zhihu_scan_parameters_submit",
     "zhihu_scan_stop",
     "zhihu_filtered",
     "zhihu_review",
@@ -60,8 +56,7 @@ STATUS_LABELS = {
     "completed": "已完成",
     "partial_failed": "部分失败，覆盖不完整",
     "failed": "失败",
-    "waiting_user": "等待本批反馈与明确继续",
-    "waiting_preference": "等待最新反馈生效",
+    "waiting_user": "等待继续查找",
     "paused": "已暂停",
     "stopped": "本轮已结束",
     "exhausted": "结果实际耗尽",
@@ -129,7 +124,7 @@ class ZhihuActionHandler:
                 row = conn.execute(
                     """SELECT id,json_extract(state_json,'$.query_plan') AS plan
                     FROM zhihu_scans
-                    WHERE json_extract(state_json,'$.schema_version')=3
+                    WHERE json_extract(state_json,'$.schema_version') =5
                     AND json_extract(state_json,'$.topic.id')=?
                     ORDER BY created_at DESC LIMIT 1""",
                     (topic["id"],),
@@ -275,8 +270,6 @@ class ZhihuActionHandler:
             "zhihu_scan_continue",
             "zhihu_scan_append",
             "zhihu_scan_append_submit",
-            "zhihu_scan_parameters",
-            "zhihu_scan_parameters_submit",
             "zhihu_scan_stop",
         }:
             scan = self._scan(value)
@@ -286,12 +279,6 @@ class ZhihuActionHandler:
                         scan,
                         offset=_integer(value.get("offset", 0), minimum=0),
                         max_payload_bytes=self.max_payload_bytes,
-                    )
-                }
-            if action == "zhihu_scan_parameters":
-                return {
-                    "card": build_parameter_form_card(
-                        scan, max_payload_bytes=self.max_payload_bytes
                     )
                 }
             if action == "zhihu_scan_append":
@@ -308,7 +295,6 @@ class ZhihuActionHandler:
             operation = {
                 "zhihu_scan_continue": "continue",
                 "zhihu_scan_append_submit": "append",
-                "zhihu_scan_parameters_submit": "continue",
                 "zhihu_scan_stop": "stop",
             }[action]
             quantity = None
@@ -319,39 +305,19 @@ class ZhihuActionHandler:
                 quantity = int(raw_quantity)
                 if not 1 <= quantity <= 10000:
                     raise FeedbackError("追加数量需为 1–10000 的整数")
-            overrides = None
-            advance_collection = False
-            if action == "zhihu_scan_parameters_submit":
-                parameter_name = _field(form, "parameter_name")
-                raw_parameter_value = _field(form, "parameter_value")
-                if parameter_name not in TRIAL_PARAMETERS:
-                    raise FeedbackError("请选择本次唯一要修改的试用参数")
-                if (
-                    not raw_parameter_value.isascii()
-                    or not raw_parameter_value.isdecimal()
-                ):
-                    raise FeedbackError("参数值需为 1–100 的整数")
-                parameter_value = int(raw_parameter_value)
-                maximum = 32 if parameter_name == "evaluation_batch_size" else 100
-                if not 1 <= parameter_value <= maximum:
-                    raise FeedbackError(f"参数值需为 1–{maximum} 的整数")
-                overrides = {parameter_name: parameter_value}
-                advance_collection = parameter_name != "evaluation_batch_size"
             request_control(
                 database,
                 scan["id"],
                 operation,
                 quantity=quantity,
                 event_id=event_id,
-                parameter_overrides=overrides,
-                advance_collection=advance_collection,
             )
             self.wake()
             return {
                 "card": self._scan_card(self._scan(value)),
                 "toast": "本轮停止请求已保存，在途结果会保留"
                 if operation == "stop"
-                else "继续请求已保存，先等最新反馈生效，再处理一批并等待你决定",
+                else "继续请求已保存，使用最新有效偏好继续查找",
                 "toast_type": "success",
             }
         if action == "zhihu_scan":
@@ -472,7 +438,7 @@ class ZhihuActionHandler:
                 learning=zhihu_learning.snapshot(database),
                 max_payload_bytes=self.max_payload_bytes,
             ),
-            "toast": "反馈已保存，偏好更新中；明确继续后用于后续批次",
+            "toast": "反馈已保存，偏好更新中；明确继续后用于下次搜索或继续",
             "toast_type": "success",
         }
 
@@ -494,22 +460,15 @@ class ZhihuActionHandler:
         scan = get_scan(self.database_path, scan_id)
         if not scan:
             raise FeedbackError("找不到对应的语义扫描，请开始新一轮")
+        if scan.get("schema_version") != 5:
+            raise FeedbackError("旧扫描已终止，请重新发起搜索")
         return scan
 
     def _scan_card(self, scan: dict) -> dict:
         from .zhihu_semantic_scan import refresh_feedback_stats
 
         refresh_feedback_stats(self.database_path, scan)
-        batches = scan.get("batches") or []
-        if isinstance(batches, dict):
-            batches = list(batches.values())
-        batch = batches[-1] if batches else scan.get("batch")
-        return build_batch_summary_card(
-            scan,
-            batch,
-            latest_learning=scan.get("learning"),
-            max_payload_bytes=self.max_payload_bytes,
-        )
+        return build_stream_card(scan, max_payload_bytes=self.max_payload_bytes)
 
     def _content(self, value: dict) -> dict:
         article = zhihu_store.get_content(
@@ -521,7 +480,7 @@ class ZhihuActionHandler:
         scan_id = self._scan(value)["id"] if value.get("scan_id") is not None else None
         query = (
             "SELECT article_json,reason,coalesce((SELECT json_extract(s.state_json,'$.evaluation_policy') "
-            "FROM zhihu_scans s WHERE s.id=r.scan_id),'relevance_v2') AS evaluation_policy "
+            "FROM zhihu_scans s WHERE s.id=r.scan_id),'historical') AS evaluation_policy "
             "FROM zhihu_candidate_results r WHERE snapshot_id=?"
         )
         args = [article["snapshot_id"]]

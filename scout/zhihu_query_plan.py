@@ -1,11 +1,10 @@
 """Finite, case-sensitive query plans."""
 
-import copy
 from datetime import UTC, datetime
 
 from .config import ConfigError
 
-EVALUATION_POLICY = "relevance_v2"
+EVALUATION_POLICY = "content_v1"
 
 
 def install_query_plan(state, terms):
@@ -17,10 +16,6 @@ def install_query_plan(state, terms):
     plan = list(dict.fromkeys(term.strip() for term in terms if term.strip()))
     if not plan:
         raise ConfigError("查询计划不能为空")
-    saved = {
-        (row["query"], row["sort"]): row
-        for row in state.get("reusable_queries", state.get("queries", []))
-    }
     streams = []
     contributions = {}
     for term in plan:
@@ -29,26 +24,18 @@ def install_query_plan(state, terms):
             "duplicates": 0,
             "records": 0,
             "pages": 0,
-            "reused_pages": 0,
         }
         for order in ("latest", "general"):
-            previous = saved.get((term, order))
-            stream = (
-                copy.deepcopy(previous)
-                if previous
-                else {
-                    "query": term,
-                    "sort": order,
-                    "cursor": None,
-                    "is_end": False,
-                    "pages": 0,
-                }
-            )
-            stream["reused_pages"] = stream["pages"]
-            stream["new_candidates"] = 0
-            stream["duplicates"] = 0
-            stream["records"] = 0
-            contributions[term]["reused_pages"] += stream["pages"]
+            stream = {
+                "query": term,
+                "sort": order,
+                "cursor": None,
+                "is_end": False,
+                "pages": 0,
+                "new_candidates": 0,
+                "duplicates": 0,
+                "records": 0,
+            }
             streams.append(stream)
     state.update(
         query_plan=plan,

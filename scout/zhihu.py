@@ -1,4 +1,4 @@
-"""知乎话题配置、同题回答扩展与反馈学习。"""
+"""知乎话题搜索、单篇内容评价与反馈学习。"""
 
 import argparse
 import json
@@ -12,7 +12,7 @@ from .config import ConfigError, load_config, load_dotenv, resolve_feishu_delive
 from .locking import RunLockedError, sender_lock
 from .notifier import NotificationError
 from .zhihu_client import CollectorClient, CollectorError
-from .zhihu_delivery import delivery_summary, initialize, reset_failed
+from .zhihu_delivery import delivery_summary, initialize
 from .zhihu_scan import (
     export_report,
     get_scan,
@@ -46,26 +46,12 @@ def main(argv=None):
             )
             sub.add_argument("--wait-seconds", type=float, default=60)
     for name in ("continue", "append", "stop"):
-        sub = commands.add_parser(
-            name, help="逐批控制语义扫描；完成后等待反馈及明确继续"
-        )
+        sub = commands.add_parser(name, help="控制搜索；送达目标数量后暂停")
         sub.add_argument("--database", type=Path)
         sub.add_argument("--run-id", required=True)
         sub.add_argument("--wait-seconds", type=float, default=60)
         if name == "append":
             sub.add_argument("--quantity", type=int, required=True)
-        if name != "stop":
-            sub.add_argument(
-                "--parameter",
-                choices=(
-                    "evaluation_batch_size",
-                    "search_latest_pages_per_advance",
-                    "search_general_pages_per_advance",
-                    "question_pages_per_advance",
-                ),
-            )
-            sub.add_argument("--value", type=int)
-            sub.add_argument("--advance-collection", action="store_true")
     for name, help_text in (
         ("manage", "发送知乎话题管理卡片"),
         ("topics", "查看话题和语义偏好学习进度"),
@@ -84,23 +70,11 @@ def main(argv=None):
 
             if not 0 <= args.wait_seconds <= 3600:
                 raise ConfigError("wait-seconds 必须在 0..3600 内")
-            parameter = getattr(args, "parameter", None)
-            value = getattr(args, "value", None)
-            if (parameter is None) != (value is None):
-                raise ConfigError("parameter 和 value 需同时填写")
             request = request_control(
                 database,
                 args.run_id,
                 args.command,
                 quantity=getattr(args, "quantity", None),
-                parameter_overrides={parameter: value} if parameter else None,
-                advance_collection=getattr(args, "advance_collection", False)
-                or parameter
-                in {
-                    "search_latest_pages_per_advance",
-                    "search_general_pages_per_advance",
-                    "question_pages_per_advance",
-                },
             )
             if args.command == "stop":
                 print(
@@ -156,7 +130,7 @@ def main(argv=None):
             elif args.command == "retry-cards":
                 with sender_lock(database), transaction(database) as conn:
                     changed = conn.execute(
-                        "UPDATE zhihu_card_deliveries SET status='pending',attempts=0,retry_at=0,last_error='' WHERE status='failed' OR (status='sending' AND attempts>=3)"
+                        "UPDATE zhihu_card_deliveries SET status='pending',attempts=0,retry_at=0,last_error='' WHERE last_error!='zhihu_content_v1_upgrade' AND (status='failed' OR (status='sending' AND attempts>=3))"
                     ).rowcount
                 work(database)
                 print(json.dumps({"resumed": changed}))
@@ -205,7 +179,6 @@ def main(argv=None):
             state = _state(database, args.run_id)
             with sender_lock(database):
                 initialize(database)
-            reset_failed(database, state["id"])
             resume_collection(database, state["id"])
             state = _state(database, state["id"])
         else:

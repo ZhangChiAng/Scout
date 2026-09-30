@@ -33,6 +33,10 @@ class ZhihuScanWorker:
             zhihu_delivery.initialize(self.path)
             zhihu_store.initialize(self.path)
         self.thread.start()
+        self.learning_thread = threading.Thread(
+            target=self._learn, name="scout-zhihu-learning", daemon=True
+        )
+        self.learning_thread.start()
 
     def close(self) -> None:
         self.stop.set()
@@ -41,13 +45,23 @@ class ZhihuScanWorker:
             # shared-session cleanup to finish before this daemon thread exits.
             self.thread.join(timeout=20)
 
+    def _learn(self) -> None:
+        from .zhihu_learning import train_pending
+
+        while not self.stop.is_set():
+            try:
+                train_pending(self.path)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Zhihu preference update failed: %s", type(exc).__name__)
+            self.stop.wait(5)
+
     def _run(self) -> None:
         while not self.stop.is_set():
             try:
                 resume_pending(self.path, shutdown=self.stop)
             except Exception as exc:  # noqa: BLE001 - resume on next iteration
                 logger.warning("Zhihu task recovery failed: %s", type(exc).__name__)
-            self.stop.wait(5)
+            self.stop.wait(0.5)
 
 
 def _json(value):
@@ -176,9 +190,9 @@ def _resume_scan(database_path, *, shutdown=None):
             return
         with closing(connect(path, read_only=True)) as conn:
             row = conn.execute("""SELECT id FROM zhihu_scans s
-                WHERE status IN ('running','stopping','waiting_preference')
+                WHERE json_extract(state_json,'$.schema_version')=5 AND (status IN ('running','stopping')
                 OR EXISTS (SELECT 1 FROM zhihu_jobs j WHERE j.kind='semantic_control'
-                    AND j.status='pending' AND json_extract(j.payload_json,'$.scan_id')=s.id)
+                    AND j.status='pending' AND json_extract(j.payload_json,'$.scan_id')=s.id))
                 ORDER BY created_at LIMIT 1""").fetchone()
         if row:
             try:

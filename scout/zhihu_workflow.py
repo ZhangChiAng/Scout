@@ -31,15 +31,6 @@ def work(database):
                 zhihu_store.initialize(path)
         except RunLockedError:
             return
-        with closing(connect(path, read_only=True)) as conn:
-            explicit_retry = (
-                conn.execute(
-                    """SELECT 1 FROM zhihu_jobs WHERE kind='semantic_control' AND status='pending'
-                AND json_extract(payload_json,'$.action') IN ('continue','append') LIMIT 1"""
-                ).fetchone()
-                is not None
-            )
-        zhihu_learning.train_pending(path, force=explicit_retry)
         _refresh_feedback_reports(path)
         _jobs(path)
         _cards(path)
@@ -57,7 +48,7 @@ def _refresh_feedback_reports(database):
         learning = zhihu_learning.snapshot(path)
         with closing(connect(path, read_only=True)) as conn:
             rows = conn.execute(
-                "SELECT state_json FROM zhihu_scans WHERE json_extract(state_json,'$.schema_version')=3"
+                "SELECT state_json FROM zhihu_scans WHERE json_extract(state_json,'$.schema_version')=5"
             ).fetchall()
         for row in rows:
             state = json.loads(row[0])
@@ -118,24 +109,25 @@ def _jobs(database):
             zhihu_store.finish_job(database, job["id"])
 
 
-def _cards(database):
+def _cards(database, *, messages_only=False):
     try:
         with sender_lock(database):
-            _send_card(database)
+            _send_card(database, messages_only=messages_only)
     except RunLockedError:
         return
 
 
-def _send_card(database):
+def _send_card(database, *, messages_only=False):
     with closing(connect(database, read_only=True, rows=True)) as conn:
         row = conn.execute(
             """SELECT * FROM zhihu_card_deliveries d
             WHERE status IN ('pending','sending') AND retry_at<=?
+            AND (?=0 OR event_id LIKE 'message:%')
             AND NOT (event_id LIKE 'semantic:%' AND EXISTS (
                 SELECT 1 FROM zhihu_settings s
                 WHERE s.key='semantic_stop:' || substr(d.event_id,10,36)))
-            ORDER BY id LIMIT 1""",
-            (time.time(),),
+            ORDER BY CASE WHEN event_id LIKE 'message:%' THEN 0 ELSE 1 END, id LIMIT 1""",
+            (time.time(), int(messages_only)),
         ).fetchone()
     if row is None:
         return

@@ -3,9 +3,7 @@ model = "gpt-6-sol"
 # Optional; GPT-6 Sol's default reasoning effort is medium.
 reasoning_effort = "medium"
 
-# Zhihu relevance only. Query rewriting, summaries and preference learning use [model].
-# Scout requests Fast (priority) for both models; RSS continues using [model].
-[zhihu_relevance]
-model = "gpt-6-luna"
-# Optional; GPT-6 Luna's default reasoning effort is medium.
-reasoning_effort = "medium"
+# 知乎相关性、偏好筛选与摘要共用一次内容评价。
+[zhihu_content]
+model = "gpt-6.1-sol"
+reasoning_effort = "low"

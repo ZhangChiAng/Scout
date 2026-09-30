@@ -210,13 +210,11 @@ def load_models_config(
             f"cannot load models config {config_path}: {type(exc).__name__}"
         ) from exc
 
-    if section not in {"model", "zhihu_relevance"}:
+    if section not in {"model", "zhihu_content"}:
         raise ConfigError(f"unknown model config section: {section}")
-    if set(raw) - {"model", "zhihu_relevance"} or "model" not in raw:
-        raise ConfigError("use [model] and optional [zhihu_relevance]")
+    if set(raw) - {"model", "zhihu_content"} or "model" not in raw:
+        raise ConfigError("use [model] and optional [zhihu_content]")
     model_raw = raw.get(section)
-    if section == "zhihu_relevance" and model_raw is None:
-        return ModelConfig("gpt-6-luna", "medium")
     if isinstance(model_raw, dict) and "base_url" in model_raw:
         raise ConfigError(
             f"{section}.base_url is no longer supported; use [model] with "

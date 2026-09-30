@@ -11,7 +11,7 @@ import json
 import re
 import sqlite3
 import uuid
-from contextlib import closing
+from contextlib import closing, nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -187,6 +187,7 @@ def save_topic(
     enabled=True,
     event_id="",
     description=None,
+    connection=None,
 ):
     if not isinstance(name, str) or not 1 <= len(name.strip()) <= 100:
         raise FeedbackError("话题名称需为 1–100 字")
@@ -204,7 +205,11 @@ def save_topic(
         "description": description.strip() if description is not None else None,
     }
     stamp = _now()
-    with transaction(database, rows=True, timeout=0.3) as conn:
+    with (
+        nullcontext(connection)
+        if connection is not None
+        else transaction(database, rows=True, timeout=0.3)
+    ) as conn:
         event_key = "topic_event:" + event_id
         request_key = "topic_event_request:" + event_id
         if event_id:
@@ -368,11 +373,15 @@ def set_schedule(database, enabled, time_of_day=None, timezone="Asia/Shanghai"):
     return value
 
 
-def authorize_owner(database, open_id):
-    """Call only after validating the source card and the proposed operation."""
+def authorize_owner(database, open_id, *, connection=None):
+    """Call only after validating the source group/card and proposed operation."""
     if not isinstance(open_id, str) or not open_id.strip():
         raise FeedbackError("缺少飞书操作人身份")
-    with transaction(database, timeout=0.3) as conn:
+    with (
+        nullcontext(connection)
+        if connection is not None
+        else transaction(database, timeout=0.3)
+    ) as conn:
         owner = conn.execute(
             "SELECT open_id FROM scout_owner WHERE singleton=1"
         ).fetchone()
@@ -661,7 +670,7 @@ def list_filtered(database, topic_id=None, limit=20, offset=0, *, scan_id=None):
     with closing(connect(database, read_only=True, rows=True, timeout=0.3)) as conn:
         clauses, values = (
             [
-                "reason IN ('reject','irrelevant','preference_rejected','not_recommended','keyword_filtered','preference','filtered','keyword','date_unknown','date_missing','date_invalid','date_expired','date_future','body_incomplete','body_failed','model_failed','model_error','relevance_failed','evaluation_failed')"
+                "reason IN ('reject','irrelevant','preference_rejected','not_recommended','keyword_filtered','preference','filtered','keyword','date_unknown','date_missing','date_invalid','date_expired','date_future','body_incomplete','body_failed','model_failed','model_error','content_failed')"
             ],
             [],
         )
@@ -673,7 +682,7 @@ def list_filtered(database, topic_id=None, limit=20, offset=0, *, scan_id=None):
             values.append(scan_id)
         rows = conn.execute(
             "SELECT r.*,coalesce((SELECT json_extract(s.state_json,'$.evaluation_policy') "
-            "FROM zhihu_scans s WHERE s.id=r.scan_id),'relevance_v2') AS evaluation_policy "
+            "FROM zhihu_scans s WHERE s.id=r.scan_id),'historical') AS evaluation_policy "
             "FROM zhihu_candidate_results r WHERE "
             + " AND ".join(clauses)
             + " ORDER BY CASE WHEN reason IN ('reject','not_recommended','keyword_filtered') THEN 0 ELSE 1 END,updated_at DESC LIMIT ? OFFSET ?",
@@ -693,9 +702,13 @@ def _job(row):
     return value
 
 
-def enqueue_job(database, kind, payload, event_id=""):
+def enqueue_job(database, kind, payload, event_id="", *, connection=None):
     stamp = _now()
-    with transaction(database, rows=True, timeout=0.3) as conn:
+    with (
+        nullcontext(connection)
+        if connection is not None
+        else transaction(database, rows=True, timeout=0.3)
+    ) as conn:
         if event_id:
             row = conn.execute(
                 "SELECT * FROM zhihu_jobs WHERE event_id=?", (event_id,)
@@ -743,7 +756,9 @@ def finish_job(database, job_id, error=""):
         )
 
 
-def enqueue_card(database, card, chat_id, event_id="", snapshot_id=None):
+def enqueue_card(
+    database, card, chat_id, event_id="", snapshot_id=None, *, connection=None
+):
     """Reserve first review deliveries under the automatic stable identity too.
 
     An explicit repeat review may use the separate card queue, but the first
@@ -751,7 +766,11 @@ def enqueue_card(database, card, chat_id, event_id="", snapshot_id=None):
     """
     if not isinstance(card, dict) or not isinstance(chat_id, str) or not chat_id:
         raise FeedbackError("卡片或目标群无效")
-    with transaction(database, rows=True, timeout=0.3) as conn:
+    with (
+        nullcontext(connection)
+        if connection is not None
+        else transaction(database, rows=True, timeout=0.3)
+    ) as conn:
         if event_id:
             row = conn.execute(
                 "SELECT * FROM zhihu_card_deliveries WHERE event_id=?", (event_id,)
