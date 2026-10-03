@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .database import connect, transaction
 from .storage import FeedbackError
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SCHEMA = (
     """CREATE TABLE IF NOT EXISTS zhihu_settings (
         key TEXT PRIMARY KEY, value_json TEXT NOT NULL)""",
@@ -80,6 +80,12 @@ SCHEMA = (
         last_error TEXT NOT NULL DEFAULT '', message_id TEXT, delivered_at REAL,
         created_at TEXT NOT NULL, event_id TEXT UNIQUE,
         snapshot_id INTEGER REFERENCES zhihu_content_snapshots(snapshot_id))""",
+    """CREATE TABLE IF NOT EXISTS zhihu_message_receipts (
+        message_id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('received','error')),
+        reason TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending'
+            CHECK(status IN ('pending','sending','delivered','failed')),
+        attempts INTEGER NOT NULL DEFAULT 0, retry_at REAL NOT NULL DEFAULT 0,
+        last_error TEXT NOT NULL DEFAULT '')""",
     """CREATE TABLE IF NOT EXISTS scout_owner (
         singleton INTEGER PRIMARY KEY CHECK(singleton=1), open_id TEXT NOT NULL UNIQUE,
         bound_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')))""",
@@ -889,3 +895,18 @@ def delivered_keys(database):
                 )
             )
         return result
+
+
+def retire_removed_cards(database):
+    """Keep retired UI out of both normal delivery and manual retries."""
+    with transaction(database) as conn:
+        conn.execute(
+            """UPDATE zhihu_card_deliveries SET status='failed',attempts=3,
+            last_error='removed_zhihu_ui'
+            WHERE status!='delivered' AND last_error!='removed_zhihu_ui' AND (
+                event_id LIKE 'message:%' OR
+                json_extract(card_json,'$.header.title.content') IN (
+                    'Scout · 知乎搜索','Scout · 知乎话题管理','新增知乎话题',
+                    '修改知乎话题','知乎扫描','知乎 · 历史扫描','知乎 · 结果复核'
+                ))"""
+        )

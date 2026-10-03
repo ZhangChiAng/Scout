@@ -262,7 +262,6 @@ def listen_feedback(
         database_path,
         chat_id=delivery.receive_id,
         bot_id=identity,
-        max_payload_bytes=max_payload_bytes,
         wake=receipt_worker.wake.set,
     )
     dispatcher = (

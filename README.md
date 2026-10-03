@@ -30,7 +30,7 @@ Scout 使用专用认证目录，可用 `SCOUT_CODEX_HOME` 修改；该目录不
 
 ## 首次运行
 
-飞书应用需启用机器人、发送权限和 `im:message.group_at_msg:readonly`，
+飞书应用需启用机器人、发送权限、`im:message.reactions:write_only` 和 `im:message.group_at_msg:readonly`，
 通过长连接接收 `card.action.trigger` 回调及 `im.message.receive_v1` 事件。
 发布应用并将机器人加入目标群后，启动 listener：
 
@@ -61,7 +61,8 @@ uv run --locked python -m scout.zhihu --help
 知乎需要独立本机采集器；在 `.env` 设置 `ZHIHU_COLLECTOR_URL` 和
 `ZHIHU_COLLECTOR_TOKEN`，令牌与采集器一致，健康接口需提供 `search_page` 和
 `detail`。Cookie 仅保存在采集器项目。
-在目标群使用真实 @ 提及发送话题，机器人搜索近 30 天内容，送达五条后暂停；
+在目标群使用真实 @ 提及发送话题；受理成功贴「收到」表情，受理失败用文字回复原因。
+机器人搜索近 30 天内容，送达五条后暂停；
 通过卡片继续、指定追加数量、停止或填写反馈，也可用 `scout.zhihu status` 查看状态。
 每篇使用 `[zhihu_content]` 的 `gpt-6.1-sol / low` 一次完成相关性、偏好筛选和摘要，
 同时只评价一篇。每次开始或继续固定当前有效偏好，学习失败保留上一有效版本。

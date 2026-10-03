@@ -8,7 +8,7 @@ import sys
 import time
 from pathlib import Path
 
-from .config import ConfigError, load_config, load_dotenv, resolve_feishu_delivery
+from .config import ConfigError, load_dotenv
 from .locking import RunLockedError, sender_lock
 from .notifier import NotificationError
 from .zhihu_client import CollectorClient, CollectorError
@@ -40,7 +40,7 @@ def main(argv=None):
         sub.add_argument("--database", type=Path)
         sub.add_argument("--run-id", help="Scout 扫描 UUID")
         if name == "scan":
-            sub.add_argument("--topic-id", type=int, help="从飞书管理卡片保存的话题 ID")
+            sub.add_argument("--topic-id", type=int, help="通过 @ 机器人保存的话题 ID")
             sub.add_argument(
                 "--request-uuid", help="相同 UUID 返回原扫描，不创建新的发送授权"
             )
@@ -53,9 +53,8 @@ def main(argv=None):
         if name == "append":
             sub.add_argument("--quantity", type=int, required=True)
     for name, help_text in (
-        ("manage", "发送知乎话题管理卡片"),
         ("topics", "查看话题和语义偏好学习进度"),
-        ("retry-cards", "恢复失败的管理或补标卡片，复用原 UUID"),
+        ("retry-cards", "恢复失败的进度或复核卡片，复用原 UUID"),
     ):
         sub = commands.add_parser(name, help=help_text)
         sub.add_argument("--database", type=Path)
@@ -100,37 +99,19 @@ def main(argv=None):
                 )
             )
             return 0
-        if args.command in {"manage", "topics", "retry-cards"}:
+        if args.command in {"topics", "retry-cards"}:
             from . import zhihu_learning, zhihu_store
             from .database import transaction
-            from .zhihu_actions import ZhihuActionHandler
             from .zhihu_workflow import work
 
             with sender_lock(database):
                 initialize(database)
                 zhihu_store.initialize(database)
-            if args.command == "manage":
-                delivery = resolve_feishu_delivery()
-                if delivery.receive_id_type != "chat_id":
-                    raise ConfigError("知乎管理卡片必须发送到飞书群 chat_id")
-                card = ZhihuActionHandler(
-                    database, max_payload_bytes=load_config().feishu.max_payload_bytes
-                ).management_card()
-                queued = zhihu_store.enqueue_card(database, card, delivery.receive_id)
-                work(database)
-                print(
-                    json.dumps(
-                        {
-                            "management_card_id": queued["id"],
-                            "send_uuid": queued["send_uuid"],
-                        },
-                        ensure_ascii=False,
-                    )
-                )
-            elif args.command == "retry-cards":
+            if args.command == "retry-cards":
+                zhihu_store.retire_removed_cards(database)
                 with sender_lock(database), transaction(database) as conn:
                     changed = conn.execute(
-                        "UPDATE zhihu_card_deliveries SET status='pending',attempts=0,retry_at=0,last_error='' WHERE last_error!='zhihu_content_v1_upgrade' AND (status='failed' OR (status='sending' AND attempts>=3))"
+                        "UPDATE zhihu_card_deliveries SET status='pending',attempts=0,retry_at=0,last_error='' WHERE last_error NOT IN ('zhihu_content_v1_upgrade','removed_zhihu_ui') AND (status='failed' OR (status='sending' AND attempts>=3))"
                     ).rowcount
                 work(database)
                 print(json.dumps({"resumed": changed}))
@@ -139,7 +120,6 @@ def main(argv=None):
                     json.dumps(
                         {
                             "topics": zhihu_store.list_topics(database),
-                            "schedule": zhihu_store.get_schedule(database),
                             "learning": zhihu_learning.snapshot(database),
                         },
                         ensure_ascii=False,

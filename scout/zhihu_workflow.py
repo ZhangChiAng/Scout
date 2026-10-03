@@ -1,4 +1,4 @@
-"""Background semantic scan jobs, learning, and management/review card delivery."""
+"""Background semantic scan jobs, learning, and progress/review card delivery."""
 
 import fcntl
 import json
@@ -109,25 +109,25 @@ def _jobs(database):
             zhihu_store.finish_job(database, job["id"])
 
 
-def _cards(database, *, messages_only=False):
+def _cards(database):
     try:
         with sender_lock(database):
-            _send_card(database, messages_only=messages_only)
+            _send_card(database)
     except RunLockedError:
         return
 
 
-def _send_card(database, *, messages_only=False):
+def _send_card(database):
+    zhihu_store.retire_removed_cards(database)
     with closing(connect(database, read_only=True, rows=True)) as conn:
         row = conn.execute(
             """SELECT * FROM zhihu_card_deliveries d
             WHERE status IN ('pending','sending') AND retry_at<=?
-            AND (?=0 OR event_id LIKE 'message:%')
             AND NOT (event_id LIKE 'semantic:%' AND EXISTS (
                 SELECT 1 FROM zhihu_settings s
                 WHERE s.key='semantic_stop:' || substr(d.event_id,10,36)))
-            ORDER BY CASE WHEN event_id LIKE 'message:%' THEN 0 ELSE 1 END, id LIMIT 1""",
-            (time.time(), int(messages_only)),
+            ORDER BY id LIMIT 1""",
+            (time.time(),),
         ).fetchone()
     if row is None:
         return

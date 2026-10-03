@@ -7,9 +7,7 @@ from collections.abc import Sequence
 
 from .notifier import _check_card_size, _link_url, _markdown, _md_escape
 
-TOPICS_PER_PAGE = 6
 FILTERED_PER_PAGE = 6
-TIME_RANGES = {"30d": "近 30 天"}
 FILTER_REASONS = {
     "not_recommended": "语义判断：不推荐",
     "reject": "语义判断：不推荐",
@@ -108,94 +106,6 @@ def _progress(learning: dict | None) -> str:
     return text
 
 
-def build_management_card(
-    topics: Sequence[dict],
-    schedule: dict | None = None,
-    learning: dict | None = None,
-    *,
-    offset: int = 0,
-    recent_activity: Sequence[str] = (),
-    max_payload_bytes: int = 30 * 1024,
-) -> dict:
-    offset = max(0, offset)
-    elements = [
-        _markdown(
-            f"主动开始扫描 · 每轮固定近 30 天\n逐条推送，成功送达 5 条后暂停；继续无需先反馈。\n{_progress(learning)}"
-        ),
-        _actions(
-            _button("新增话题", "topic_new", style="primary"),
-            _button("开始全部话题新一轮", "scan"),
-        ),
-        _actions(
-            _button("结果复核", "filtered"),
-            _button("刷新状态", "manage", offset=offset),
-        ),
-    ]
-    if recent_activity:
-        elements.append(
-            _markdown(
-                "**最近状态（北京时间）**\n"
-                + "\n".join(_md_escape(item) for item in recent_activity)
-            )
-        )
-    if not topics:
-        elements.append(_markdown("新增话题并描述你关注的内容，即可保存并开始扫描。"))
-    for topic in topics[offset : offset + TOPICS_PER_PAGE]:
-        topic_id = topic["id"]
-        enabled = bool(topic["enabled"])
-        description = topic.get("description") or "，".join(
-            topic.get("search_terms") or []
-        )
-        plan = topic.get("latest_query_plan") or []
-        if isinstance(plan, dict):
-            plan = plan.get("search_terms") or plan.get("queries") or []
-        terms = "，".join(
-            str(term.get("query") if isinstance(term, dict) else term) for term in plan
-        )
-        details = (
-            f"**{_md_escape(topic['name'])}** · {'启用' if enabled else '停用'}\n"
-            f"关注描述：{_md_escape(description[:800])}\n发布时间：近 30 天"
-        )
-        if terms:
-            details += f"\n最近一轮实际搜索词：{_md_escape(terms[:600])}"
-        elements.extend(
-            [
-                {"tag": "hr"},
-                _markdown(details),
-                _actions(
-                    _button("修改", "topic_edit", topic_id=topic_id),
-                    _button(
-                        "停用" if enabled else "启用",
-                        "topic_toggle",
-                        topic_id=topic_id,
-                        enabled=not enabled,
-                    ),
-                    _button("开始新一轮", "scan", topic_id=topic_id),
-                ),
-            ]
-        )
-        if topic.get("latest_scan_id"):
-            elements.append(
-                _actions(
-                    _button(
-                        "查看本轮状态与继续",
-                        "scan_status",
-                        scan_id=topic["latest_scan_id"],
-                    )
-                )
-            )
-    navigation = []
-    if offset:
-        navigation.append(
-            _button("上一页", "manage", offset=max(0, offset - TOPICS_PER_PAGE))
-        )
-    if len(topics) > offset + TOPICS_PER_PAGE:
-        navigation.append(_button("下一页", "manage", offset=offset + TOPICS_PER_PAGE))
-    if navigation:
-        elements.append(_actions(*navigation))
-    return _card("Scout · 知乎话题管理", elements, max_payload_bytes)
-
-
 def _input(
     name: str, label: str, placeholder: str, *, value: str = "", length: int = 500
 ) -> dict:
@@ -217,56 +127,6 @@ def _submit(label: str, action: str, **value) -> dict:
         "name": f"submit_{action}",
         "action_type": "form_submit",
     }
-
-
-def build_topic_form_card(
-    topic: dict | None = None, *, max_payload_bytes: int = 30 * 1024
-) -> dict:
-    topic = topic or {}
-    reference = {"topic_id": topic["id"]} if topic else {}
-    elements = [
-        _markdown(
-            "**发布时间：近 30 天**\n描述你关注的内容。逐篇判断相关性并生成摘要，送达 5 条后暂停，继续无需先反馈。"
-        ),
-        {
-            "tag": "form",
-            "name": "zhihu_topic",
-            "elements": [
-                _input(
-                    "name",
-                    "话题名称",
-                    "例如：人工智能研究",
-                    value=topic.get("name", ""),
-                    length=100,
-                ),
-                _input(
-                    "description",
-                    "自然语言关注描述",
-                    "例如：关注大模型推理能力的真实进展、研究方法和失败案例",
-                    value=topic.get("description")
-                    or "，".join(topic.get("search_terms") or []),
-                    length=4000,
-                ),
-                _submit("保存并开始", "topic_save", **reference),
-            ],
-        },
-        _actions(_button("返回话题管理", "manage")),
-    ]
-    return _card(
-        "修改知乎话题" if topic else "新增知乎话题", elements, max_payload_bytes
-    )
-
-
-def build_schedule_card(schedule: dict, *, max_payload_bytes: int = 30 * 1024) -> dict:
-    """Keep old imports working while making old schedule cards harmless."""
-    return _card(
-        "知乎扫描",
-        [
-            _markdown("每日扫描已停用，请在话题管理中主动开始新一轮。"),
-            _actions(_button("话题管理", "manage")),
-        ],
-        max_payload_bytes,
-    )
 
 
 def _content_elements(article: dict, reason: str = "") -> list[dict]:
@@ -445,16 +305,14 @@ def build_filtered_card(
     *,
     offset: int = 0,
     topic_id: int | None = None,
-    scan_id: str | None = None,
+    scan_id: str,
     max_payload_bytes: int = 30 * 1024,
 ) -> dict:
     reference = {"topic_id": topic_id} if topic_id is not None else {}
-    if scan_id:
-        reference["scan_id"] = scan_id
-    scope = "当前轮次" if scan_id else "全部保留轮次"
+    reference["scan_id"] = scan_id
     elements = [
         _markdown(
-            f"范围：{scope}。查看不推荐、基础筛选及异常记录。有完整正文的内容可以补充或修改反馈，影响后续搜索。"
+            "范围：当前轮次。查看不推荐、基础筛选及异常记录。有完整正文的内容可以补充或修改反馈，影响后续搜索。"
         )
     ]
     if not rows:
@@ -478,7 +336,7 @@ def build_filtered_card(
                         "review",
                         snapshot_id=snapshot_id,
                         reason=reason,
-                        **({"scan_id": scan_id} if scan_id else {}),
+                        scan_id=scan_id,
                     )
                 )
             )
@@ -498,14 +356,10 @@ def build_filtered_card(
                 "下一页", "filtered", offset=offset + FILTERED_PER_PAGE, **reference
             )
         )
-    navigation.append(
-        _button("返回本轮状态", "scan_status", scan_id=scan_id)
-        if scan_id
-        else _button("返回话题管理", "manage")
-    )
+    navigation.append(_button("返回本轮状态", "scan_status", scan_id=scan_id))
     elements.append(_actions(*navigation))
     return _card(
-        "知乎 · 当前轮次结果复核" if scan_id else "知乎 · 结果复核",
+        "知乎 · 当前轮次结果复核",
         elements,
         max_payload_bytes,
     )
@@ -620,12 +474,6 @@ def build_pending_card(
 
 
 def build_stream_card(scan: dict, *, max_payload_bytes: int = 30 * 1024) -> dict:
-    if scan.get("schema_version") != 5:
-        return _card(
-            "知乎 · 历史扫描",
-            [_markdown("旧扫描已终止，请重新发起搜索。")],
-            max_payload_bytes,
-        )
     request = scan.get("request", {})
     counts = scan.get("candidate_counts", {})
     relevance = scan.get("relevance_counts", {})
