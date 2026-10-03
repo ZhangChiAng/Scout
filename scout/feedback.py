@@ -148,7 +148,6 @@ class FeedbackHandler:
                     form=action.form_value if action is not None else None,
                     message_id=message_id or "",
                     chat_id=(context.open_chat_id or "") if context is not None else "",
-                    open_id=open_id or "",
                     event_id=event_id,
                 )
             )

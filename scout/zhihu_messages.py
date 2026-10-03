@@ -1,4 +1,4 @@
-"""Start durable Zhihu scans from the sole owner's group mentions."""
+"""Start durable Zhihu scans from group mentions."""
 
 from __future__ import annotations
 
@@ -65,9 +65,6 @@ class ZhihuMessageHandler:
         ]
         if not bot_keys:
             return
-        open_id = getattr(getattr(sender, "sender_id", None), "open_id", None)
-        if not open_id:
-            return
         description = ""
         if message.message_type == "text":
             try:
@@ -97,11 +94,6 @@ class ZhihuMessageHandler:
         event_id = "message:" + message.message_id
         try:
             with transaction(self.database, rows=True, timeout=0.3) as conn:
-                owner = conn.execute(
-                    "SELECT open_id FROM scout_owner WHERE singleton=1"
-                ).fetchone()
-                if owner is not None and owner[0] != open_id:
-                    return
                 if conn.execute(
                     "SELECT 1 FROM zhihu_message_receipts WHERE message_id=?",
                     (message.message_id,),
@@ -114,7 +106,6 @@ class ZhihuMessageHandler:
                 ).fetchone():
                     return
                 if not reason:
-                    zhihu_store.authorize_owner(self.database, open_id, connection=conn)
                     topic = zhihu_store.save_topic(
                         self.database,
                         description[:100],

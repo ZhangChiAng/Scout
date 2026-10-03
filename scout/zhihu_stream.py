@@ -24,7 +24,7 @@ from .database import connect, transaction
 from .llm import load_required_model_config
 from .locking import RunLockedError
 from .zhihu_client import CollectorClient, CollectorError
-from .zhihu_query_plan import install_query_plan
+from .zhihu_query_plan import EVALUATION_POLICY, install_query_plan
 from .zhihu_semantics import rewrite_topic
 from .zhihu_verify import complete_body
 
@@ -63,7 +63,10 @@ def new_request(database, state, action="continue"):
 
 
 def initialize(database, state):
-    if state.get("schema_version") != 5:
+    if (
+        state.get("schema_version") != 5
+        or state.get("evaluation_policy") != EVALUATION_POLICY
+    ):
         raise ConfigError("旧扫描已终止，请重新发起搜索")
     if state.get("stream"):
         return
@@ -101,13 +104,6 @@ def refresh(database, state):
     state["model_usage"] = scan._model_usage(state)
     state["candidate_counts"] = dict(
         Counter(c["status"] for c in state["candidates"].values())
-    )
-    state["relevance_counts"] = dict(
-        Counter(
-            candidate["result"]["relevance"]
-            for candidate in state["candidates"].values()
-            if candidate.get("result", {}).get("relevance")
-        )
     )
     return rows
 

@@ -91,9 +91,6 @@ SCHEMA = (
             CHECK(status IN ('pending','sending','delivered','failed')),
         attempts INTEGER NOT NULL DEFAULT 0, retry_at REAL NOT NULL DEFAULT 0,
         last_error TEXT NOT NULL DEFAULT '')""",
-    """CREATE TABLE IF NOT EXISTS scout_owner (
-        singleton INTEGER PRIMARY KEY CHECK(singleton=1), open_id TEXT NOT NULL UNIQUE,
-        bound_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')))""",
 )
 
 
@@ -393,26 +390,6 @@ def set_schedule(database, enabled, time_of_day=None, timezone="Asia/Shanghai"):
     return value
 
 
-def authorize_owner(database, open_id, *, connection=None):
-    """Call only after validating the source group/card and proposed operation."""
-    if not isinstance(open_id, str) or not open_id.strip():
-        raise FeedbackError("缺少飞书操作人身份")
-    with (
-        nullcontext(connection)
-        if connection is not None
-        else transaction(database, timeout=0.3)
-    ) as conn:
-        owner = conn.execute(
-            "SELECT open_id FROM scout_owner WHERE singleton=1"
-        ).fetchone()
-        if owner is None:
-            conn.execute(
-                "INSERT INTO scout_owner(singleton,open_id) VALUES (1,?)", (open_id,)
-            )
-        elif owner[0] != open_id:
-            raise FeedbackError("仅 Scout 所有者可以操作知乎话题及反馈")
-
-
 def authorize_card(database, message_id, chat_id, snapshot_id=None):
     if not message_id or not chat_id:
         raise FeedbackError("缺少卡片消息或群身份")
@@ -424,7 +401,7 @@ def authorize_card(database, message_id, chat_id, snapshot_id=None):
             ).fetchone()
             if row and (snapshot_id is None or row["snapshot_id"] == snapshot_id):
                 return
-    raise FeedbackError("卡片与已送达的 Scout 消息不一致")
+    raise FeedbackError("卡片数据已清空或与已送达记录不一致，请重新发起搜索")
 
 
 def save_content(database, article, scan_id=None):

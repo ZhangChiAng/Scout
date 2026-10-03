@@ -19,6 +19,7 @@ from .zhihu_cards import (
     build_pending_card,
     build_stream_card,
 )
+from .zhihu_query_plan import EVALUATION_POLICY
 
 REMOVED_ACTIONS = {
     "zhihu_manage",
@@ -87,7 +88,6 @@ class ZhihuActionHandler:
         form: dict | None,
         message_id: str,
         chat_id: str,
-        open_id: str,
         event_id: str,
     ) -> dict:
         try:
@@ -96,7 +96,6 @@ class ZhihuActionHandler:
                 form=form or {},
                 message_id=message_id,
                 chat_id=chat_id,
-                open_id=open_id,
                 event_id=event_id,
             )
         except ValueError as exc:
@@ -109,7 +108,6 @@ class ZhihuActionHandler:
         form: dict,
         message_id: str,
         chat_id: str,
-        open_id: str,
         event_id: str,
     ) -> dict:
         database = self.database_path
@@ -123,9 +121,7 @@ class ZhihuActionHandler:
             raise FeedbackError("该功能已移除，请使用继续")
         if not isinstance(action, str) or action not in KNOWN_ACTIONS:
             raise FeedbackError("未知的知乎操作")
-        # Only a delivered Scout card may bind the sole owner on its first action.
         zhihu_store.authorize_card(database, message_id, chat_id)
-        zhihu_store.authorize_owner(database, open_id)
         if action in {
             "zhihu_scan_status",
             "zhihu_scan_pending",
@@ -274,7 +270,10 @@ class ZhihuActionHandler:
         scan = get_scan(self.database_path, scan_id)
         if not scan:
             raise FeedbackError("找不到对应的语义扫描，请开始新一轮")
-        if scan.get("schema_version") != 5:
+        if (
+            scan.get("schema_version") != 5
+            or scan.get("evaluation_policy") != EVALUATION_POLICY
+        ):
             raise FeedbackError("旧扫描已终止，请重新发起搜索")
         return scan
 
@@ -312,14 +311,9 @@ class ZhihuActionHandler:
             article["_review_reason"] = row[1]
             article["evaluation_policy"] = row[2]
             for field in (
-                "relevance",
-                "evaluation",
                 "stages",
-                "semantic_result",
                 "semantic",
-                "summary",
-                "decision",
-                "decision_reason",
+                "topic",
             ):
                 article.pop(field, None)
                 if field in evaluated:

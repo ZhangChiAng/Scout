@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 from .config import ConfigError
 
-EVALUATION_POLICY = "content_v1"
+EVALUATION_POLICY = "content_v2"
 
 
 def install_query_plan(state, terms):

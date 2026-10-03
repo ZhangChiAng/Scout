@@ -9,6 +9,7 @@ from .config import ConfigError, resolve_feishu_delivery
 from .database import connect, transaction
 from .locking import RunLockedError, sender_lock
 from .notifier import FeishuNotifier, NotificationError
+from .zhihu_query_plan import EVALUATION_POLICY
 
 SCHEMA = """CREATE TABLE IF NOT EXISTS zhihu_link_deliveries (
     position INTEGER PRIMARY KEY,
@@ -100,7 +101,10 @@ def _recover(database):
                 "SELECT state_json FROM zhihu_scans WHERE id=?", (row["scan_id"],)
             ).fetchone()
             state = json.loads(saved[0]) if saved else {}
-            if state.get("schema_version") != 5:
+            if (
+                state.get("schema_version") != 5
+                or state.get("evaluation_policy") != EVALUATION_POLICY
+            ):
                 continue
             request = state.get("request", {})
             baseline = set(request.get("baseline_keys", []))

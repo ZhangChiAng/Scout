@@ -57,6 +57,8 @@ def _semantic_samples(conn, cutoff):
                 "origin": row["origin"],
                 "title": article.get("title", ""),
                 "body": row["body"],
+                "topic": article.get("topic", {}),
+                "evaluation": article.get("semantic", {}),
                 "created_at": row["created_at"],
             }
         )

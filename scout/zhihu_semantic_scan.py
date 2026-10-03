@@ -63,7 +63,10 @@ def create_scan(database, topic_id, request_uuid=None):
             previous = json.loads(row[0])
             if previous.get("topic", {}).get("id") != topic_id:
                 raise ConfigError("同一扫描 UUID 不能用于不同话题")
-            if previous.get("schema_version") != 5:
+            if (
+                previous.get("schema_version") != 5
+                or previous.get("evaluation_policy") != EVALUATION_POLICY
+            ):
                 raise ConfigError("旧扫描已终止，请重新发起搜索")
             return previous
     topic = zhihu_store.get_topic(database, topic_id)
@@ -137,7 +140,11 @@ def request_control(
     }
     with transaction(database, rows=True, timeout=0.3) as conn:
         current = _resolve_scan(conn, scan_id)
-        if not current or current.get("schema_version") != 5:
+        if (
+            not current
+            or current.get("schema_version") != 5
+            or current.get("evaluation_policy") != EVALUATION_POLICY
+        ):
             raise FeedbackError("旧扫描已终止，请重新发起搜索")
         scan_id = current["id"]
         payload["scan_id"] = scan_id
@@ -436,6 +443,10 @@ def _save_result(database, state, journal, key, result):
     article.update(
         semantic=result,
         stages=stages,
+        topic={
+            "name": state["topic"]["name"],
+            "description": state["topic"]["description"],
+        },
         evaluation_policy=EVALUATION_POLICY,
         semantic_preference_version=candidate["result_preference"].get("version"),
     )
@@ -474,12 +485,14 @@ def _register_ready(database, state, journal):
             candidate = state["candidates"][key]
             article = candidate["article"]
             if (
-                not isinstance(result.get("summary"), str)
-                or not result["summary"].strip()
+                not complete_body(article)
+                or article.get("evaluation_policy") != EVALUATION_POLICY
+                or not isinstance(result.get("reason"), str)
+                or not 0 < len(result["reason"].strip()) <= 60
                 or candidate.get("stages", {}).get("content", {}).get("status")
                 != "completed"
             ):
-                raise LLMError("准备发送的内容必须具有已完成的内容评价及摘要")
+                raise LLMError("准备发送的内容必须具有完整正文及当前策略的推送判断")
             card = build_content_card(
                 article,
                 snapshot_id=candidate["snapshot_id"],

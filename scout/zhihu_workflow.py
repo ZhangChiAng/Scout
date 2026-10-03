@@ -86,7 +86,7 @@ def _jobs(database):
                 scan_uuid = str(
                     uuid.uuid5(
                         uuid.NAMESPACE_URL,
-                        f"scout:zhihu:job:{job['id']}:topic:{topic['id']}",
+                        f"scout:zhihu:job:{job['id']}:{job['created_at']}:topic:{topic['id']}",
                     )
                 )
                 create_scan(database, topic["id"], scan_uuid)

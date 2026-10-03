@@ -160,7 +160,9 @@ def main(argv=None):
             state = _state(database, state["id"])
         else:
             if not args.topic_id:
-                raise ConfigError("新扫描需要 --topic-id；先用 manage 在飞书配置话题")
+                raise ConfigError(
+                    "新扫描需要 --topic-id；请先在飞书群 @ 机器人描述话题"
+                )
             from .zhihu_semantic_scan import create_scan as create_topic_scan
 
             state = create_topic_scan(database, args.topic_id, args.request_uuid)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 
 from .notifier import _check_card_size, _link_url, _markdown, _md_escape
@@ -88,7 +89,7 @@ def _progress(learning: dict | None) -> str:
         text += (
             "\n尚无有效偏好档案，先按空偏好处理。"
             if has_feedback
-            else "\n当前偏好为空，只判断话题相关性；相关内容直接推荐，质量标准等待真实反馈建立。"
+            else "\n当前规则为空，先按话题要求判断；反馈可帮助学习相关性和兴趣。"
         )
     training_status = learning.get("training_status")
     if training_status == "busy":
@@ -129,12 +130,28 @@ def _submit(label: str, action: str, **value) -> dict:
     }
 
 
+def body_excerpt(body: str) -> str:
+    """Keep the opening three sentences/paragraphs, without rewriting the text."""
+    body = "\n".join(" ".join(line.split()) for line in body.splitlines()).strip()
+    if not body:
+        return "（未获取正文）"
+    start = count = 0
+    end = len(body)
+    for boundary in re.finditer(r"""[。！？!?]+[”’」』"']*|\.(?=\s|$)|\n+""", body):
+        if body[start : boundary.end()].strip():
+            count += 1
+        start = boundary.end()
+        if count == 3:
+            end = boundary.end()
+            break
+    excerpt = " ".join(body[:end].split())
+    return excerpt if len(excerpt) <= 300 else excerpt[:299].rstrip() + "…"
+
+
 def _content_elements(article: dict, reason: str = "") -> list[dict]:
     title = _md_escape(str(article.get("title") or "知乎内容")[:200])
     url = str(article.get("url") or "")
     evaluation = article.get("semantic") or {}
-    relevance = evaluation.get("relevance")
-    summary = str(evaluation.get("summary") or "").strip()
     decision = evaluation.get("decision")
     explanation = evaluation.get("reason")
     votes = article.get("voteup_count")
@@ -146,34 +163,15 @@ def _content_elements(article: dict, reason: str = "") -> list[dict]:
             f"采集时赞同：{votes if type(votes) is int and votes >= 0 else '未知'}"
         ),
     ]
-    if summary:
-        elements.append(
-            _markdown(
-                "**摘要**\n"
-                + _md_escape(summary[:3000])
-                + ("…" if len(summary) > 3000 else "")
-            )
+    elements.append(
+        _markdown(
+            "**正文摘录**\n" + _md_escape(body_excerpt(article.get("body") or ""))
         )
-    elif not relevance and not article.get("stages"):
-        # Unevaluated candidates show source text explicitly as an excerpt.
-        excerpt = str(article.get("body") or "（未获取正文）").strip()
-        elements.append(_markdown("**正文摘录**\n" + _md_escape(excerpt[:1000])))
-    if relevance:
-        labels = {
-            "relevant": "相关",
-            "irrelevant": "明确无关",
-            "uncertain": "相关性存疑",
-        }
-        verdict = relevance
-        text = f"**相关性**：{_md_escape(labels.get(verdict, str(verdict)))}"
-        if evaluation.get("relevance_reason"):
-            text += f"\n{_md_escape(str(evaluation['relevance_reason'])[:1500])}"
-        elements.append(_markdown(text))
+    )
     if decision:
-        label = "最终评价"
-        text = f"**{label}**：{_md_escape(DECISIONS.get(decision, str(decision)))}"
+        text = f"**推送判断**：{_md_escape(DECISIONS.get(decision, str(decision)))}"
         if explanation:
-            text += f"\n{_md_escape(str(explanation)[:1500])}"
+            text += f"\n{_md_escape(str(explanation)[:60])}"
         elements.append(_markdown(text))
     saved = (article.get("stages") or {}).get("content") or {}
     if saved.get("status") == "failed":
@@ -276,7 +274,7 @@ def build_feedback_form_card(
     elements.extend(
         [
             _markdown(
-                f"请说明{sentiment}这篇内容的原因，填写后再提交。反馈用于归纳后续搜索的语义偏好。"
+                f"请说明{sentiment}这篇内容的原因，填写后再提交。可说明是否切题、哪里符合或不符合兴趣。"
             ),
             {
                 "tag": "form",
@@ -455,7 +453,6 @@ def build_pending_card(
 def build_stream_card(scan: dict, *, max_payload_bytes: int = 30 * 1024) -> dict:
     request = scan.get("request", {})
     counts = scan.get("candidate_counts", {})
-    relevance = scan.get("relevance_counts", {})
     labels = {
         "running": "正在查找",
         "waiting_user": "已达到目标，等待继续",
@@ -477,7 +474,6 @@ def build_stream_card(scan: dict, *, max_payload_bytes: int = 30 * 1024) -> dict
         _markdown(
             f"已搜索 {scan.get('metrics', {}).get('search_pages', 0)} 页 · 发现 {len(scan.get('candidates', {}))} 篇\n"
             f"待处理 {counts.get('pending', 0)} · 推荐 {counts.get('recommend', 0)} · 不确定 {counts.get('uncertain', 0)} · 不推荐 {counts.get('reject', 0)}\n"
-            f"相关 {relevance.get('relevant', 0)} · 无关 {relevance.get('irrelevant', 0)} · 相关性存疑 {relevance.get('uncertain', 0)}\n"
             f"单篇失败 {sum(counts.get(k, 0) for k in ('body_failed', 'content_failed'))}"
         ),
         _markdown(
