@@ -1,6 +1,6 @@
 [model]
-model = "gpt-6-sol"
-# Optional; GPT-6 Sol's default reasoning effort is medium.
+model = "gpt-6.1-sol"
+# RSS、搜索词提取与偏好归纳使用 medium。
 reasoning_effort = "medium"
 
 # 知乎根据话题与兴趣进行一次推送判断。

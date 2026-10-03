@@ -25,7 +25,7 @@ def install_query_plan(state, terms):
             "records": 0,
             "pages": 0,
         }
-        for order in ("latest", "general"):
+        for order in ("general", "latest"):
             stream = {
                 "query": term,
                 "sort": order,

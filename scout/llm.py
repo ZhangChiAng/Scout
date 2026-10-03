@@ -218,7 +218,7 @@ def load_models_config(
     if isinstance(model_raw, dict) and "base_url" in model_raw:
         raise ConfigError(
             f"{section}.base_url is no longer supported; use [model] with "
-            'model = "gpt-6-sol" and reasoning_effort = "medium", then run '
+            'model = "gpt-6.1-sol" and reasoning_effort = "medium", then run '
             "uv run --locked python -m scout.auth login"
         )
     if (

@@ -8,7 +8,7 @@ from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
 
-from . import zhihu_learning, zhihu_store
+from . import zhihu_store
 from .database import connect
 from .storage import FeedbackError
 from .zhihu_cards import (
@@ -183,14 +183,13 @@ class ZhihuActionHandler:
             }
         if action == "zhihu_review":
             self._require_event(event_id)
+            self._scan(value)
             article = self._content(value)
             feedback = zhihu_store.latest_feedback(database, article["article_key"])
             card = build_content_card(
                 article,
                 snapshot_id=article["snapshot_id"],
                 feedback=feedback,
-                reason=article.get("_review_reason") or "来自结果复核的补充反馈",
-                scan_id=self._scan(value)["id"],
                 max_payload_bytes=self.max_payload_bytes,
             )
             zhihu_store.enqueue_card(
@@ -253,7 +252,6 @@ class ZhihuActionHandler:
                 article,
                 snapshot_id=snapshot_id,
                 feedback=feedback,
-                learning=zhihu_learning.snapshot(database),
                 max_payload_bytes=self.max_payload_bytes,
             ),
             "toast": "反馈已保存，偏好更新中；明确继续后用于下次搜索或继续",
@@ -292,7 +290,7 @@ class ZhihuActionHandler:
         # Evaluation may have completed after the immutable body snapshot was saved.
         scan_id = self._scan(value)["id"] if value.get("scan_id") is not None else None
         query = (
-            "SELECT article_json,reason,coalesce((SELECT json_extract(s.state_json,'$.evaluation_policy') "
+            "SELECT article_json,coalesce((SELECT json_extract(s.state_json,'$.evaluation_policy') "
             "FROM zhihu_scans s WHERE s.id=r.scan_id),'historical') AS evaluation_policy "
             "FROM zhihu_candidate_results r WHERE snapshot_id=?"
         )
@@ -308,8 +306,7 @@ class ZhihuActionHandler:
             raise FeedbackError("该内容不属于当前轮次的复核结果")
         if row:
             evaluated = json.loads(row[0])
-            article["_review_reason"] = row[1]
-            article["evaluation_policy"] = row[2]
+            article["evaluation_policy"] = row[1]
             for field in (
                 "stages",
                 "semantic",

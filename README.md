@@ -26,7 +26,7 @@ uv run --locked python -m scout.auth status
 ```
 
 Scout 使用专用认证目录，可用 `SCOUT_CODEX_HOME` 修改；该目录不能包含 `config.toml`。
-模型在 `models.toml` 中配置，官方 SDK 随包提供运行时。
+模型在 `models.toml` 中配置，全项目使用 `gpt-6.1-sol`，官方 SDK 随包提供运行时。
 
 ## 首次运行
 
@@ -62,7 +62,7 @@ uv run --locked python -m scout.zhihu --help
 `ZHIHU_COLLECTOR_TOKEN`，令牌与采集器一致，健康接口需提供 `search_page` 和
 `detail`。Cookie 仅保存在采集器项目。
 在目标群使用真实 @ 提及发送话题；受理成功贴「收到」表情，受理失败用文字回复原因。
-机器人搜索近 30 天内容，送达五条后暂停；
+机器人搜索近 30 天内容，每个搜索词先综合、后最新交叉分页，送达五条后暂停；
 通过卡片继续、停止或填写反馈，也可用 `scout.zhihu status` 查看状态。
 每篇使用 `[zhihu_content]` 的 `gpt-6.1-sol / low`，根据话题和兴趣判断是否推送，
 同时只评价一篇。卡片展示正文前几句和简短理由。“继续”在目标未满时补足，满额后再找五条。

@@ -21,6 +21,20 @@ from .notifier import NotificationError, _build_client
 logger = logging.getLogger(__name__)
 
 
+class ReceiptDeliveryError(NotificationError):
+    """Keep only response status codes, without message content or credentials."""
+
+    def __init__(self, response):
+        super().__init__(
+            f"Feishu receipt failed (http_status={response.raw.status_code}, "
+            f"code={response.code})"
+        )
+
+
+def _receipt_error(exc):
+    return str(exc) if isinstance(exc, ReceiptDeliveryError) else type(exc).__name__
+
+
 def bot_open_id(delivery, timeout_seconds):
     request = BaseRequest()
     request.http_method = HttpMethod.GET
@@ -134,7 +148,7 @@ class ZhihuMessageHandler:
                     "暂时无法保存搜索任务，请稍后重新发送。",
                 )
             except Exception as exc:  # noqa: BLE001 - best-effort reply during DB outage
-                logger.warning("Zhihu failure reply failed: %s", type(exc).__name__)
+                logger.warning("Zhihu failure reply failed: %s", _receipt_error(exc))
             return
         self.wake()
 
@@ -146,6 +160,7 @@ def send_receipt(message_id, kind, reason=""):
     endpoint = "reactions" if kind == "received" else "reply"
     request.uri = f"/open-apis/im/v1/messages/{quote(message_id, safe='')}/{endpoint}"
     request.token_types = {AccessTokenType.TENANT}
+    request.headers["Content-Type"] = "application/json; charset=utf-8"
     request.body = (
         {"reaction_type": {"emoji_type": "Get"}}
         if kind == "received"
@@ -159,7 +174,7 @@ def send_receipt(message_id, kind, reason=""):
     )
     response = _build_client(resolve_feishu_delivery(), 15).request(request)
     if not response.success():
-        raise NotificationError(f"Feishu receipt failed (code={response.code})")
+        raise ReceiptDeliveryError(response)
 
 
 def deliver_receipt(database):
@@ -191,11 +206,11 @@ def deliver_receipt(database):
                 (
                     "failed" if attempt == 3 else "pending",
                     time.time() + (5 if attempt == 1 else 15),
-                    type(exc).__name__,
+                    _receipt_error(exc),
                     row["message_id"],
                 ),
             )
-        logger.warning("Zhihu receipt delivery failed: %s", type(exc).__name__)
+        logger.warning("Zhihu receipt delivery failed: %s", _receipt_error(exc))
     else:
         with transaction(database) as conn:
             conn.execute(

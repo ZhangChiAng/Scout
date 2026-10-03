@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Sequence
+from datetime import date, datetime
 
+from .datetime_utils import BEIJING_TIMEZONE
 from .notifier import _check_card_size, _link_url, _markdown, _md_escape
 
 FILTERED_PER_PAGE = 6
@@ -73,40 +75,6 @@ def _card(title: str, elements: list[dict], max_payload_bytes: int) -> dict:
     return card
 
 
-def _progress(learning: dict | None) -> str:
-    learning = learning or {}
-    progress = learning.get("progress") or {}
-    text = (
-        f"知乎语义偏好 v{learning.get('version') or 0} · "
-        f"喜欢 {progress.get('likes', 0)} 篇 · 不喜欢 {progress.get('dislikes', 0)} 篇"
-    )
-    has_feedback = bool(
-        learning.get("feedback_revision")
-        or progress.get("likes")
-        or progress.get("dislikes")
-    )
-    if not learning.get("ready"):
-        text += (
-            "\n尚无有效偏好档案，先按空偏好处理。"
-            if has_feedback
-            else "\n当前规则为空，先按话题要求判断；反馈可帮助学习相关性和兴趣。"
-        )
-    training_status = learning.get("training_status")
-    if training_status == "busy":
-        text += "\n偏好更新正在等待模型空闲，当前使用已完成的偏好。"
-    elif training_status == "failed" or learning.get("training_error"):
-        text += "\n偏好更新失败，保留上一有效版本。"
-    elif learning.get("training_pending") or training_status in {
-        "pending",
-        "running",
-        "waiting",
-    }:
-        text += "\n已提交反馈正在等待归纳；继续使用当前有效偏好。"
-    elif learning.get("ready"):
-        text += "\n当前有效反馈已归纳，继续查找时使用最新已完成版本。"
-    return text
-
-
 def _input(
     name: str, label: str, placeholder: str, *, value: str = "", length: int = 500
 ) -> dict:
@@ -130,9 +98,34 @@ def _submit(label: str, action: str, **value) -> dict:
     }
 
 
-def body_excerpt(body: str) -> str:
-    """Keep the opening three sentences/paragraphs, without rewriting the text."""
-    body = "\n".join(" ".join(line.split()) for line in body.splitlines()).strip()
+def _published_at(value: str) -> str:
+    """Display source timestamps in Beijing time without inventing precision."""
+    value = value.strip()
+    try:
+        if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+            return date.fromisoformat(value).isoformat()
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is not None:
+            return parsed.astimezone(BEIJING_TIMEZONE).strftime(
+                "%Y-%m-%d %H:%M:%S（北京时间）"
+            )
+    except ValueError, OverflowError:
+        pass
+    return "未知"
+
+
+def body_excerpt(body: str, *, title: str = "") -> str:
+    """Skip repeated title lines, then keep three original sentences/paragraphs."""
+    lines = [" ".join(line.split()) for line in body.splitlines()]
+    title = " ".join(title.split())
+    start = 0
+    while start < len(lines):
+        line = lines[start]
+        heading = re.sub(r"^#{1,6}\s+", "", line)
+        if line and (not title or heading != title):
+            break
+        start += 1
+    body = "\n".join(lines[start:]).strip()
     if not body:
         return "（未获取正文）"
     start = count = 0
@@ -148,7 +141,7 @@ def body_excerpt(body: str) -> str:
     return excerpt if len(excerpt) <= 300 else excerpt[:299].rstrip() + "…"
 
 
-def _content_elements(article: dict, reason: str = "") -> list[dict]:
+def _content_elements(article: dict) -> list[dict]:
     title = _md_escape(str(article.get("title") or "知乎内容")[:200])
     url = str(article.get("url") or "")
     evaluation = article.get("semantic") or {}
@@ -159,13 +152,18 @@ def _content_elements(article: dict, reason: str = "") -> list[dict]:
         _markdown(f"**{title}**"),
         _markdown(
             f"作者：{_md_escape(str(article.get('author') or '未知')[:100])}\n"
-            f"发布日期：{_md_escape(str(article.get('published_at') or '未知'))}\n"
+            f"发布日期：{_published_at(article.get('published_at') or '')}\n"
             f"采集时赞同：{votes if type(votes) is int and votes >= 0 else '未知'}"
         ),
     ]
     elements.append(
         _markdown(
-            "**正文摘录**\n" + _md_escape(body_excerpt(article.get("body") or ""))
+            "**正文摘录**\n"
+            + _md_escape(
+                body_excerpt(
+                    article.get("body") or "", title=article.get("title") or ""
+                )
+            )
         )
     )
     if decision:
@@ -181,29 +179,8 @@ def _content_elements(article: dict, reason: str = "") -> list[dict]:
                 + _md_escape(str(saved.get("error") or "本篇未发送")[:500])
             )
         )
-    metrics = saved.get("telemetry", {})
-    if metrics:
-        elements.append(
-            _markdown(
-                f"**内容评价开销**：{_md_escape(str(metrics.get('model') or '未知模型'))} · "
-                f"{_md_escape(str(metrics.get('reasoning_effort') or ''))} · "
-                f"调用 {metrics.get('calls', 0)} 次 · {metrics.get('duration_seconds', 0):.1f} 秒\n"
-                + "token："
-                + _md_escape(
-                    json.dumps(metrics.get("token_usage"), ensure_ascii=False)
-                    if metrics.get("token_usage") is not None
-                    else "未提供"
-                )
-            )
-        )
     if url:
         elements.append(_markdown(f"[查看知乎原文]({_link_url(url)})"))
-    if reason:
-        elements.append(
-            _markdown(
-                f"**处理记录**：{_md_escape(FILTER_REASONS.get(reason, reason)[:500])}"
-            )
-        )
     return elements
 
 
@@ -213,13 +190,8 @@ def build_content_card(
     snapshot_id: int,
     max_payload_bytes: int = 30 * 1024,
     feedback: dict | None = None,
-    learning: dict | None = None,
-    reason: str = "",
-    scan_id: str | None = None,
 ) -> dict:
-    elements = _content_elements(article, reason)
-    if learning is not None:
-        elements.append(_markdown(_progress(learning)))
+    elements = _content_elements(article)
     if feedback:
         label = (
             "喜欢"
@@ -240,13 +212,6 @@ def build_content_card(
             _actions(
                 _button("喜欢", "like", style="primary", snapshot_id=snapshot_id),
                 _button("不喜欢", "dislike", style="danger", snapshot_id=snapshot_id),
-            )
-        )
-    if scan_id:
-        elements.append(
-            _actions(
-                _button("查看搜索进度", "scan_status", scan_id=scan_id),
-                _button("停止搜索", "scan_stop", scan_id=scan_id),
             )
         )
     return _card(
@@ -479,33 +444,7 @@ def build_stream_card(scan: dict, *, max_payload_bytes: int = 30 * 1024) -> dict
         _markdown(
             "搜索词：" + "；".join(_md_escape(t) for t in scan.get("query_plan", []))
         ),
-        _markdown(
-            "逐条推送，送达够数后暂停。最新和综合交替搜索，按搜索结果顺序处理；不确定内容会说明疑点。继续无需先反馈。"
-        ),
     ]
-    preference = scan.get("stream", {}).get("preference", {})
-    elements.append(
-        _markdown(
-            f"本次固定偏好版本：{preference.get('version') or '空偏好'} · 同时评价 1 篇"
-        )
-    )
-    if scan.get("learning"):
-        elements.append(_markdown(_progress(scan["learning"])))
-    if request.get("first_delivery_seconds") is not None:
-        elements.append(
-            _markdown(f"本次首条送达耗时 {request['first_delivery_seconds']:.1f} 秒")
-        )
-    if request.get("target_delivery_seconds") is not None:
-        elements.append(
-            _markdown(f"本次达到目标耗时 {request['target_delivery_seconds']:.1f} 秒")
-        )
-    if scan.get("last_error"):
-        elements.append(
-            _markdown(
-                "当前异常："
-                + _md_escape(str(scan["last_error"].get("message", ""))[:500])
-            )
-        )
     if scan.get("model_usage"):
         elements.append(
             _markdown("**模型开销**\n" + _model_usage_text(scan["model_usage"]))
@@ -513,7 +452,7 @@ def build_stream_card(scan: dict, *, max_payload_bytes: int = 30 * 1024) -> dict
     if scan["status"] == "exhausted":
         elements.append(
             _markdown(
-                "各搜索词的最新和综合分页均已结束，当前候选已处理完；单篇失败内容未自动重试。"
+                "各搜索词的综合和最新分页均已结束，当前候选已处理完；单篇失败内容未自动重试。"
             )
         )
     elements.extend(

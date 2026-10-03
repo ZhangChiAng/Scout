@@ -496,8 +496,6 @@ def _register_ready(database, state, journal):
             card = build_content_card(
                 article,
                 snapshot_id=candidate["snapshot_id"],
-                learning=journal["preference"],
-                scan_id=state["id"],
                 max_payload_bytes=max_bytes,
             )
             with transaction(database) as conn:
