@@ -41,8 +41,7 @@ def _semantic_samples(conn, cutoff):
     for row in conn.execute(
         """SELECT f.*,s.body,s.article_json FROM zhihu_feedback_revisions f
         JOIN zhihu_content_snapshots s ON s.snapshot_id=f.snapshot_id
-        WHERE f.revision_id=(SELECT max(new.revision_id) FROM zhihu_feedback_revisions new
-            WHERE new.content_key=f.content_key AND new.revision_id<=?)
+        WHERE f.revision_id<=?
         ORDER BY f.content_key""",
         (cutoff,),
     ):
@@ -74,8 +73,7 @@ def snapshot(database):
         counts = dict(
             conn.execute(
                 """SELECT label,count(*) FROM zhihu_feedback_revisions f
-            WHERE revision_id=(SELECT max(new.revision_id) FROM zhihu_feedback_revisions new
-                WHERE new.content_key=f.content_key AND new.revision_id<=?) GROUP BY label""",
+            WHERE revision_id<=? GROUP BY label""",
                 (cutoff,),
             )
         )
@@ -88,6 +86,12 @@ def snapshot(database):
             ).fetchone()
             if cutoff
             else None
+        )
+        rebuild = (
+            conn.execute(
+                "SELECT 1 FROM zhihu_settings WHERE key='feedback_preferences_rebuild'"
+            ).fetchone()
+            is not None
         )
         model = json.loads(valid["model_json"]) if valid else {}
         return {
@@ -103,7 +107,8 @@ def snapshot(database):
             },
             "feedback_revision": cutoff,
             "trained_revision": valid["cutoff_revision_id"] if valid else 0,
-            "training_pending": cutoff > (valid["cutoff_revision_id"] if valid else 0),
+            "training_pending": rebuild
+            or cutoff > (valid["cutoff_revision_id"] if valid else 0),
             "training_error": latest["error"]
             if latest and latest["status"] != "ready"
             else "",
@@ -125,7 +130,15 @@ def _train_pending(database, force=False):
         valid = conn.execute(
             "SELECT * FROM zhihu_semantic_preferences WHERE status='ready' ORDER BY version DESC LIMIT 1"
         ).fetchone()
-        if not cutoff or (valid and cutoff <= valid["cutoff_revision_id"]):
+        rebuild = (
+            conn.execute(
+                "SELECT 1 FROM zhihu_settings WHERE key='feedback_preferences_rebuild'"
+            ).fetchone()
+            is not None
+        )
+        if not cutoff or (
+            not rebuild and valid and cutoff <= valid["cutoff_revision_id"]
+        ):
             return None
         if (
             not force
@@ -140,7 +153,7 @@ def _train_pending(database, force=False):
             ):
                 return None
         samples = _semantic_samples(conn, cutoff)
-        previous = json.loads(valid["model_json"]) if valid else None
+        previous = json.loads(valid["model_json"]) if valid and not rebuild else None
     started = time.monotonic()
     error = ""
     telemetry = {}
@@ -163,13 +176,31 @@ def _train_pending(database, force=False):
         duration_seconds=round(time.monotonic() - started, 3),
     )
     with transaction(database) as conn:
+        current = conn.execute(
+            "SELECT coalesce(max(revision_id),0) FROM zhihu_feedback_revisions"
+        ).fetchone()[0]
+        if current != cutoff:
+            # A newer feedback replaced the model input while the call ran.
+            return {"status": "superseded", "cutoff_revision_id": cutoff}
         version = conn.execute(
             "SELECT coalesce(max(version),0)+1 FROM zhihu_semantic_preferences"
         ).fetchone()[0]
         conn.execute(
             "INSERT INTO zhihu_semantic_preferences VALUES (?,?,?,?,?,?,?)",
-            (version, cutoff, status, _json(model), _json(samples), error, _now()),
+            (
+                version,
+                cutoff,
+                status,
+                _json(model),
+                _json([row["revision_id"] for row in samples]),
+                error,
+                _now(),
+            ),
         )
+        if status == "ready":
+            conn.execute(
+                "DELETE FROM zhihu_settings WHERE key='feedback_preferences_rebuild'"
+            )
     return {
         **model,
         "version": version,

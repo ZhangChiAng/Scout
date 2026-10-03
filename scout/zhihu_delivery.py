@@ -93,8 +93,8 @@ def _recover(database):
 
         if stop_requested(database, row["scan_id"]):
             continue
-        # Quota is enforced at the sender as well as admission. A new smaller
-        # append request can leave previously reserved rows for a later continue.
+        # Enforce the current quota at sending as well as admission, including
+        # targets already in progress before fixed-size continuation was adopted.
         with closing(connect(database, read_only=True)) as conn:
             saved = conn.execute(
                 "SELECT state_json FROM zhihu_scans WHERE id=?", (row["scan_id"],)

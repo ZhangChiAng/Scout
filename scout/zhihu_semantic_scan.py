@@ -125,19 +125,15 @@ def request_control(
     database,
     scan_id,
     action,
-    quantity=None,
     event_id="",
 ):
     """Callback-safe command persistence; stop is visible even during model I/O."""
     scan_id = str(uuid.UUID(scan_id))
-    if action not in {"continue", "append", "stop"}:
+    if action not in {"continue", "stop"}:
         raise FeedbackError("未知扫描操作")
-    if action == "append" and (type(quantity) is not int or not 1 <= quantity <= 10000):
-        raise FeedbackError("追加数量需为 1–10000 的整数")
     payload = {
         "scan_id": scan_id,
         "action": action,
-        "quantity": quantity,
     }
     with transaction(database, rows=True, timeout=0.3) as conn:
         current = _resolve_scan(conn, scan_id)

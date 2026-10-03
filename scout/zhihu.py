@@ -45,13 +45,11 @@ def main(argv=None):
                 "--request-uuid", help="相同 UUID 返回原扫描，不创建新的发送授权"
             )
             sub.add_argument("--wait-seconds", type=float, default=60)
-    for name in ("continue", "append", "stop"):
+    for name in ("continue", "stop"):
         sub = commands.add_parser(name, help="控制搜索；送达目标数量后暂停")
         sub.add_argument("--database", type=Path)
         sub.add_argument("--run-id", required=True)
         sub.add_argument("--wait-seconds", type=float, default=60)
-        if name == "append":
-            sub.add_argument("--quantity", type=int, required=True)
     for name, help_text in (
         ("topics", "查看话题和语义偏好学习进度"),
         ("retry-cards", "恢复失败的进度或复核卡片，复用原 UUID"),
@@ -64,7 +62,7 @@ def main(argv=None):
         database = args.database or Path(
             os.environ.get("SCOUT_DB_PATH", "data/scout.sqlite3")
         )
-        if args.command in {"continue", "append", "stop"}:
+        if args.command in {"continue", "stop"}:
             from .zhihu_semantic_scan import request_control
 
             if not 0 <= args.wait_seconds <= 3600:
@@ -73,7 +71,6 @@ def main(argv=None):
                 database,
                 args.run_id,
                 args.command,
-                quantity=getattr(args, "quantity", None),
             )
             if args.command == "stop":
                 print(

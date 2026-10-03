@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .database import connect, transaction
 from .storage import FeedbackError
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 SCHEMA = (
     """CREATE TABLE IF NOT EXISTS zhihu_settings (
         key TEXT PRIMARY KEY, value_json TEXT NOT NULL)""",
@@ -53,6 +53,7 @@ SCHEMA = (
         article_json TEXT NOT NULL, reason TEXT NOT NULL, score REAL,
         model_version INTEGER, updated_at TEXT NOT NULL,
         PRIMARY KEY(scan_id,topic_id,content_key))""",
+    # Keep the table name for compatibility; only one current row per content.
     """CREATE TABLE IF NOT EXISTS zhihu_feedback_revisions (
         revision_id INTEGER PRIMARY KEY, content_key TEXT NOT NULL,
         snapshot_id INTEGER NOT NULL REFERENCES zhihu_content_snapshots(snapshot_id),
@@ -62,6 +63,10 @@ SCHEMA = (
         created_at TEXT NOT NULL)""",
     """CREATE INDEX IF NOT EXISTS zhihu_feedback_content
         ON zhihu_feedback_revisions(content_key,revision_id DESC)""",
+    """CREATE UNIQUE INDEX IF NOT EXISTS zhihu_feedback_current
+        ON zhihu_feedback_revisions(content_key)""",
+    """CREATE TABLE IF NOT EXISTS zhihu_feedback_events (
+        event_id TEXT PRIMARY KEY, request_hash TEXT NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS zhihu_semantic_preferences (
         version INTEGER PRIMARY KEY, cutoff_revision_id INTEGER NOT NULL,
         status TEXT NOT NULL CHECK(status IN ('ready','failed','busy')),
@@ -135,6 +140,15 @@ def initialize(database):
     with closing(connect(path)) as conn:
         if _schema_complete(conn):
             return
+        if (
+            _columns(conn, "zhihu_feedback_revisions")
+            and not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name='zhihu_feedback_current'"
+            ).fetchone()
+        ):
+            raise FeedbackError(
+                "知乎反馈存储格式不兼容：当前版本要求每篇仅保留最新反馈，不支持自动升级旧格式"
+            )
         with conn:
             for statement in SCHEMA:
                 conn.execute(statement)
@@ -472,10 +486,17 @@ def latest_feedback(database, content_key):
     with closing(connect(database, read_only=True, rows=True, timeout=0.3)) as conn:
         return _feedback(
             conn.execute(
-                "SELECT * FROM zhihu_feedback_revisions WHERE content_key=? ORDER BY revision_id DESC LIMIT 1",
+                "SELECT * FROM zhihu_feedback_revisions WHERE content_key=?",
                 (content_key,),
             ).fetchone()
         )
+
+
+def feedback_request_hash(content_key, snapshot_id, label, reason):
+    """Retain replay detection without retaining past feedback text."""
+    return hashlib.sha256(
+        _json([content_key, snapshot_id, label, reason]).encode()
+    ).hexdigest()
 
 
 def save_feedback(database, snapshot_id, label, *, reason, event_id="", message_id=""):
@@ -492,36 +513,23 @@ def save_feedback(database, snapshot_id, label, *, reason, event_id="", message_
         ).fetchone()
         if article is None:
             raise FeedbackError("找不到该篇完整正文快照")
-        existing = (
-            conn.execute(
-                "SELECT * FROM zhihu_feedback_revisions WHERE event_id=?", (event_id,)
-            ).fetchone()
-            if event_id
-            else None
-        )
-        if event_id and existing is None:
-            event = conn.execute(
-                "SELECT value_json FROM zhihu_settings WHERE key=?",
-                ("feedback_event:" + event_id,),
-            ).fetchone()
-            if event:
-                existing = conn.execute(
-                    "SELECT * FROM zhihu_feedback_revisions WHERE revision_id=?",
-                    (json.loads(event[0]),),
-                ).fetchone()
-        if existing:
-            if (
-                existing["content_key"] != article["content_key"]
-                or existing["snapshot_id"] != snapshot_id
-                or existing["label"] != label
-                or existing["reason"] != reason
-            ):
-                raise FeedbackError("同一回调标识对应了不同反馈")
-            return {**_feedback(existing), "created": False}
+        key = article["content_key"]
         previous = conn.execute(
-            "SELECT * FROM zhihu_feedback_revisions WHERE content_key=? ORDER BY revision_id DESC LIMIT 1",
-            (article["content_key"],),
+            "SELECT * FROM zhihu_feedback_revisions WHERE content_key=?", (key,)
         ).fetchone()
+        digest = feedback_request_hash(key, snapshot_id, label, reason)
+        if event_id:
+            existing = conn.execute(
+                "SELECT request_hash FROM zhihu_feedback_events WHERE event_id=?",
+                (event_id,),
+            ).fetchone()
+            if existing:
+                if existing[0] != digest:
+                    raise FeedbackError("同一回调标识对应了不同反馈")
+                return {**(_feedback(previous) or {}), "created": False}
+            conn.execute(
+                "INSERT INTO zhihu_feedback_events VALUES (?,?)", (event_id, digest)
+            )
         if (
             previous
             and previous["label"] == label
@@ -529,18 +537,24 @@ def save_feedback(database, snapshot_id, label, *, reason, event_id="", message_
             and previous["reason"] == reason
             and previous["origin"] == "semantic"
         ):
-            if event_id:
-                conn.execute(
-                    "INSERT INTO zhihu_settings VALUES (?,?)",
-                    ("feedback_event:" + event_id, _json(previous["revision_id"])),
-                )
             return {**_feedback(previous), "created": False}
-        cursor = conn.execute(
+        # Allocate before overwriting: the largest current revision is always
+        # the most recent change, even when it belongs to this same article.
+        revision = conn.execute(
+            "SELECT coalesce(max(revision_id),0)+1 FROM zhihu_feedback_revisions"
+        ).fetchone()[0]
+        conn.execute(
             """INSERT INTO zhihu_feedback_revisions
-            (content_key,snapshot_id,label,keywords_json,event_id,message_id,created_at,reason,origin)
-            VALUES (?,?,?,?,?,?,?,?,?)""",
+            (revision_id,content_key,snapshot_id,label,keywords_json,event_id,message_id,created_at,reason,origin)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(content_key) DO UPDATE SET
+                revision_id=excluded.revision_id,snapshot_id=excluded.snapshot_id,
+                label=excluded.label,keywords_json=excluded.keywords_json,
+                event_id=excluded.event_id,message_id=excluded.message_id,
+                created_at=excluded.created_at,reason=excluded.reason,origin=excluded.origin""",
             (
-                article["content_key"],
+                revision,
+                key,
                 snapshot_id,
                 label,
                 "[]",
@@ -551,7 +565,6 @@ def save_feedback(database, snapshot_id, label, *, reason, event_id="", message_
                 "semantic",
             ),
         )
-        revision = cursor.lastrowid
         conn.execute(
             "INSERT OR REPLACE INTO zhihu_settings VALUES ('training_requested_revision',?)",
             (_json(revision),),
@@ -559,8 +572,7 @@ def save_feedback(database, snapshot_id, label, *, reason, event_id="", message_
         return {
             **_feedback(
                 conn.execute(
-                    "SELECT * FROM zhihu_feedback_revisions WHERE revision_id=?",
-                    (revision,),
+                    "SELECT * FROM zhihu_feedback_revisions WHERE content_key=?", (key,)
                 ).fetchone()
             ),
             "created": True,
@@ -907,6 +919,7 @@ def retire_removed_cards(database):
                 event_id LIKE 'message:%' OR
                 json_extract(card_json,'$.header.title.content') IN (
                     'Scout · 知乎搜索','Scout · 知乎话题管理','新增知乎话题',
-                    '修改知乎话题','知乎扫描','知乎 · 历史扫描','知乎 · 结果复核'
+                    '修改知乎话题','知乎扫描','知乎 · 历史扫描','知乎 · 结果复核',
+                    '知乎 · 指定追加数量'
                 ))"""
         )

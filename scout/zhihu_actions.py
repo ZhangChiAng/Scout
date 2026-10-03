@@ -13,7 +13,6 @@ from .database import connect
 from .storage import FeedbackError
 from .zhihu_cards import (
     FILTERED_PER_PAGE,
-    build_append_form_card,
     build_content_card,
     build_feedback_form_card,
     build_filtered_card,
@@ -37,8 +36,6 @@ KNOWN_ACTIONS = {
     "zhihu_scan_status",
     "zhihu_scan_pending",
     "zhihu_scan_continue",
-    "zhihu_scan_append",
-    "zhihu_scan_append_submit",
     "zhihu_scan_stop",
     "zhihu_filtered",
     "zhihu_review",
@@ -119,6 +116,11 @@ class ZhihuActionHandler:
         action = value.get("action")
         if isinstance(action, str) and action in REMOVED_ACTIONS:
             raise FeedbackError("该入口已移除，请在群里 @ 机器人描述话题")
+        if isinstance(action, str) and action in {
+            "zhihu_scan_append",
+            "zhihu_scan_append_submit",
+        }:
+            raise FeedbackError("该功能已移除，请使用继续")
         if not isinstance(action, str) or action not in KNOWN_ACTIONS:
             raise FeedbackError("未知的知乎操作")
         # Only a delivered Scout card may bind the sole owner on its first action.
@@ -128,8 +130,6 @@ class ZhihuActionHandler:
             "zhihu_scan_status",
             "zhihu_scan_pending",
             "zhihu_scan_continue",
-            "zhihu_scan_append",
-            "zhihu_scan_append_submit",
             "zhihu_scan_stop",
         }:
             scan = self._scan(value)
@@ -141,12 +141,6 @@ class ZhihuActionHandler:
                         max_payload_bytes=self.max_payload_bytes,
                     )
                 }
-            if action == "zhihu_scan_append":
-                return {
-                    "card": build_append_form_card(
-                        scan["id"], max_payload_bytes=self.max_payload_bytes
-                    )
-                }
             if action == "zhihu_scan_status":
                 return {"card": self._scan_card(scan)}
             self._require_event(event_id)
@@ -154,22 +148,12 @@ class ZhihuActionHandler:
 
             operation = {
                 "zhihu_scan_continue": "continue",
-                "zhihu_scan_append_submit": "append",
                 "zhihu_scan_stop": "stop",
             }[action]
-            quantity = None
-            if operation == "append":
-                raw_quantity = _field(form, "quantity")
-                if not raw_quantity.isascii() or not raw_quantity.isdecimal():
-                    raise FeedbackError("追加数量需为正整数")
-                quantity = int(raw_quantity)
-                if not 1 <= quantity <= 10000:
-                    raise FeedbackError("追加数量需为 1–10000 的整数")
             request_control(
                 database,
                 scan["id"],
                 operation,
-                quantity=quantity,
                 event_id=event_id,
             )
             self.wake()

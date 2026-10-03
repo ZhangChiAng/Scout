@@ -43,14 +43,14 @@ def deliveries(database, state):
         }
 
 
-def new_request(database, state, quantity=DEFAULT_TARGET, action="continue"):
+def new_request(database, state, action="continue"):
     previous = state.get("request")
     if previous and previous.get("id"):
         state.setdefault("requests", []).append(copy.deepcopy(previous))
     state["request"] = {
         "id": str(uuid.uuid4()),
         "action": action,
-        "quantity": quantity,
+        "quantity": DEFAULT_TARGET,
         "baseline_keys": [
             key
             for key, value in deliveries(database, state).items()
@@ -120,6 +120,13 @@ def controls(database, state):
         ).fetchall()
     for job in jobs:
         command = json.loads(job["payload_json"])
+        if command["action"] not in {"continue", "stop"}:
+            with transaction(database) as conn:
+                conn.execute(
+                    "UPDATE zhihu_jobs SET status='cancelled',last_error='removed_zhihu_append',updated_at=? WHERE id=?",
+                    (scan._now(), job["id"]),
+                )
+            continue
         state["controls"].append(
             {**command, "job_id": job["id"], "at": job["created_at"]}
         )
@@ -127,16 +134,8 @@ def controls(database, state):
             state.update(status="stopped", stop_reason="user_stop", stop_requested=True)
         elif state["status"] not in {"running"}:
             refresh(database, state)
-            if (
-                command["action"] == "append"
-                or state["request"]["qualified"] >= state["request"]["quantity"]
-            ):
-                new_request(
-                    database,
-                    state,
-                    command.get("quantity") or DEFAULT_TARGET,
-                    command["action"],
-                )
+            if state["request"]["qualified"] >= state["request"]["quantity"]:
+                new_request(database, state)
             state["resume_sequence"] = state.get("resume_sequence", 0) + 1
             state["stream"]["preference"] = copy.deepcopy(command["preference"])
             state["request"]["preference"] = copy.deepcopy(

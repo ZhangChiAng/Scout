@@ -63,9 +63,10 @@ uv run --locked python -m scout.zhihu --help
 `detail`。Cookie 仅保存在采集器项目。
 在目标群使用真实 @ 提及发送话题；受理成功贴「收到」表情，受理失败用文字回复原因。
 机器人搜索近 30 天内容，送达五条后暂停；
-通过卡片继续、指定追加数量、停止或填写反馈，也可用 `scout.zhihu status` 查看状态。
+通过卡片继续、停止或填写反馈，也可用 `scout.zhihu status` 查看状态。
 每篇使用 `[zhihu_content]` 的 `gpt-6.1-sol / low` 一次完成相关性、偏好筛选和摘要，
-同时只评价一篇。每次开始或继续固定当前有效偏好，学习失败保留上一有效版本。
+同时只评价一篇。“继续”在目标未满时补足，满额后再找五条。
+同一篇只保存最新反馈。每次开始或继续固定当前有效偏好，学习失败保留上一有效版本。
 
 已有数据库升级前先停止 listener、发送及偏好更新服务，运行
 `uv run --locked python -m scripts.upgrade_zhihu_content`，再恢复服务。

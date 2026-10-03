@@ -365,27 +365,6 @@ def build_filtered_card(
     )
 
 
-def build_append_form_card(scan_id: str, *, max_payload_bytes: int = 30 * 1024) -> dict:
-    return _card(
-        "知乎 · 指定追加数量",
-        [
-            _markdown(
-                "填写希望新增送达的数量。逐条推送，达到目标后暂停；搜索耗尽时报告实际送达数量。"
-            ),
-            {
-                "tag": "form",
-                "name": "zhihu_append",
-                "elements": [
-                    _input("quantity", "本次新增送达多少条", "例如：5", length=5),
-                    _submit("保存目标并继续", "scan_append_submit", scan_id=scan_id),
-                ],
-            },
-            _actions(_button("返回本轮状态", "scan_status", scan_id=scan_id)),
-        ],
-        max_payload_bytes,
-    )
-
-
 def _model_usage_text(usage: dict) -> str:
     lines = []
     for model, metrics in usage.items():
@@ -547,7 +526,6 @@ def build_stream_card(scan: dict, *, max_payload_bytes: int = 30 * 1024) -> dict
                 _button(
                     "继续查找", "scan_continue", style="primary", scan_id=scan["id"]
                 ),
-                _button("指定追加数量", "scan_append", scan_id=scan["id"]),
                 _button("停止", "scan_stop", scan_id=scan["id"]),
             ),
             _actions(
