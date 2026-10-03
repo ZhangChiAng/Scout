@@ -108,7 +108,7 @@ def main(argv=None):
                 zhihu_store.retire_removed_cards(database)
                 with sender_lock(database), transaction(database) as conn:
                     changed = conn.execute(
-                        "UPDATE zhihu_card_deliveries SET status='pending',attempts=0,retry_at=0,last_error='' WHERE last_error NOT IN ('zhihu_content_v1_upgrade','removed_zhihu_ui') AND (status='failed' OR (status='sending' AND attempts>=3))"
+                        "UPDATE zhihu_card_deliveries SET status='pending',attempts=0,retry_at=0,last_error='' WHERE last_error NOT IN ('zhihu_content_v1_upgrade','removed_zhihu_ui','stopped_delivery_unknown') AND (status='failed' OR (status='sending' AND attempts>=3))"
                     ).rowcount
                 work(database)
                 print(json.dumps({"resumed": changed}))

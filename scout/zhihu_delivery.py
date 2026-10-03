@@ -88,8 +88,8 @@ def _recover(database):
             ORDER BY position""").fetchall()
     for row in rows:
         row = dict(row)
-        # A user stop holds even previously registered messages; their stable
-        # identities remain reserved and explicit continuation releases them.
+        # Stop prevents further sending while the scan worker drains in-flight
+        # calls and discards the remaining candidates under this sender lock.
         from .zhihu_semantic_scan import stop_requested
 
         if stop_requested(database, row["scan_id"]):
@@ -131,6 +131,11 @@ def _recover(database):
         # consumes this attempt; the same UUID is retained for recovery.
         attempt = row["attempts"] + 1
         with transaction(database) as conn:
+            if conn.execute(
+                "SELECT 1 FROM zhihu_settings WHERE key=?",
+                ("semantic_stop:" + row["scan_id"],),
+            ).fetchone():
+                continue
             conn.execute(
                 "UPDATE zhihu_link_deliveries SET status='sending',attempts=?,retry_at=? WHERE position=?",
                 (attempt, time.time() + (5 if attempt == 1 else 15), row["position"]),

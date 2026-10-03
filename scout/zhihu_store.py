@@ -790,6 +790,11 @@ def enqueue_card(
             ).fetchone()
             if article is None:
                 raise FeedbackError("找不到该篇完整正文快照")
+            if conn.execute(
+                "SELECT 1 FROM zhihu_settings WHERE key=?",
+                ("semantic_stop:" + str(article["scan_id"]),),
+            ).fetchone():
+                raise FeedbackError("本轮搜索已结束，请重新发起搜索")
             reserved = conn.execute(
                 "SELECT * FROM zhihu_link_deliveries WHERE article_key=?",
                 (article["content_key"],),

@@ -167,6 +167,14 @@ def request_control(
                 ):
                     raise FeedbackError("同一事件不能提交不同操作")
                 return {"id": old["id"], "status": old["status"], "scan_id": scan_id}
+        if action == "continue" and (
+            current["status"] in {"stopping", "stopped"}
+            or conn.execute(
+                "SELECT 1 FROM zhihu_settings WHERE key=?",
+                ("semantic_stop:" + scan_id,),
+            ).fetchone()
+        ):
+            raise FeedbackError("本轮搜索已结束，请重新发起搜索")
         stamp = _now()
         if action != "stop":
             # Capture the effective version at the owner's explicit request.
@@ -180,6 +188,15 @@ def request_control(
             conn.execute(
                 "INSERT OR REPLACE INTO zhihu_settings VALUES (?,?)",
                 ("semantic_stop:" + scan_id, "true"),
+            )
+            current.update(
+                status="stopped" if current.get("stop_cleanup") else "stopping",
+                stop_reason="user_stop",
+                stop_requested=True,
+            )
+            conn.execute(
+                "UPDATE zhihu_scans SET status=?,state_json=? WHERE id=?",
+                (current["status"], _json(current), scan_id),
             )
         return {"id": cursor.lastrowid, "status": "pending", "scan_id": scan_id}
 
@@ -196,16 +213,18 @@ def stop_requested(database, scan_id):
 
 
 def _save(database, state):
-    # An operation started before a stop may finish; its result is saved before
-    # stopping. Existing queued sends are held by the delivery worker as well.
-    if stop_requested(database, state["id"]):
-        state["stop_requested"] = True
-        in_flight = any(
-            state.get("stream", {}).get("pipeline", {}).get("active", {}).values()
-        )
-        state["status"] = "stopping" if in_flight else "stopped"
-        state["stop_reason"] = "user_stop"
     with transaction(database) as conn:
+        # Only cleanup may publish the terminal stopped state. Check the stop
+        # marker in this transaction so a concurrent callback cannot be lost.
+        if conn.execute(
+            "SELECT 1 FROM zhihu_settings WHERE key=?",
+            ("semantic_stop:" + state["id"],),
+        ).fetchone():
+            state.update(
+                stop_requested=True,
+                status="stopped" if state.get("stop_cleanup") else "stopping",
+                stop_reason="user_stop",
+            )
         conn.execute(
             "UPDATE zhihu_scans SET status=?,state_json=? WHERE id=?",
             (state["status"], _json(state), state["id"]),
@@ -499,6 +518,11 @@ def _register_ready(database, state, journal):
                 max_payload_bytes=max_bytes,
             )
             with transaction(database) as conn:
+                if conn.execute(
+                    "SELECT 1 FROM zhihu_settings WHERE key=?",
+                    ("semantic_stop:" + state["id"],),
+                ).fetchone():
+                    return
                 existing = conn.execute(
                     "SELECT scan_id,status FROM zhihu_link_deliveries WHERE article_key=?",
                     (key,),

@@ -123,6 +123,10 @@ def _send_card(database):
         row = conn.execute(
             """SELECT * FROM zhihu_card_deliveries d
             WHERE status IN ('pending','sending') AND retry_at<=?
+            AND NOT EXISTS (
+                SELECT 1 FROM zhihu_content_snapshots c JOIN zhihu_settings s
+                ON s.key='semantic_stop:' || c.scan_id
+                WHERE c.snapshot_id=d.snapshot_id)
             AND NOT (event_id LIKE 'semantic:%' AND EXISTS (
                 SELECT 1 FROM zhihu_settings s
                 WHERE s.key='semantic_stop:' || substr(d.event_id,10,36)))
@@ -140,6 +144,12 @@ def _send_card(database):
         return
     attempt = row["attempts"] + 1
     with transaction(database) as conn:
+        if conn.execute(
+            """SELECT 1 FROM zhihu_content_snapshots c JOIN zhihu_settings s
+            ON s.key='semantic_stop:' || c.scan_id WHERE c.snapshot_id=?""",
+            (row["snapshot_id"],),
+        ).fetchone():
+            return
         conn.execute(
             "UPDATE zhihu_card_deliveries SET status='sending',attempts=?,retry_at=? WHERE id=?",
             (attempt, time.time() + (5 if attempt == 1 else 15), row["id"]),

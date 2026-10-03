@@ -16,7 +16,6 @@ from .zhihu_cards import (
     build_content_card,
     build_feedback_form_card,
     build_filtered_card,
-    build_pending_card,
     build_stream_card,
 )
 from .zhihu_query_plan import EVALUATION_POLICY
@@ -34,8 +33,7 @@ REMOVED_ACTIONS = {
 }
 
 KNOWN_ACTIONS = {
-    "zhihu_scan_status",
-    "zhihu_scan_pending",
+    "zhihu_scan_back",
     "zhihu_scan_continue",
     "zhihu_scan_stop",
     "zhihu_filtered",
@@ -123,21 +121,12 @@ class ZhihuActionHandler:
             raise FeedbackError("未知的知乎操作")
         zhihu_store.authorize_card(database, message_id, chat_id)
         if action in {
-            "zhihu_scan_status",
-            "zhihu_scan_pending",
+            "zhihu_scan_back",
             "zhihu_scan_continue",
             "zhihu_scan_stop",
         }:
             scan = self._scan(value)
-            if action == "zhihu_scan_pending":
-                return {
-                    "card": build_pending_card(
-                        scan,
-                        offset=_integer(value.get("offset", 0), minimum=0),
-                        max_payload_bytes=self.max_payload_bytes,
-                    )
-                }
-            if action == "zhihu_scan_status":
+            if action == "zhihu_scan_back":
                 return {"card": self._scan_card(scan)}
             self._require_event(event_id)
             from .zhihu_semantic_scan import request_control
@@ -155,7 +144,7 @@ class ZhihuActionHandler:
             self.wake()
             return {
                 "card": self._scan_card(self._scan(value)),
-                "toast": "本轮停止请求已保存，在途结果会保留"
+                "toast": "正在结束本轮搜索并清理未推送候选"
                 if operation == "stop"
                 else "继续请求已保存，使用最新有效偏好继续查找",
                 "toast_type": "success",

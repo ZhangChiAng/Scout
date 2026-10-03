@@ -37,7 +37,7 @@ def deliveries(database, state):
         return {
             row[0]: (row[1], row[2])
             for row in conn.execute(
-                "SELECT article_key,status,delivered_at FROM zhihu_link_deliveries WHERE scan_id=? ORDER BY position",
+                "SELECT article_key,status,delivered_at FROM zhihu_link_deliveries WHERE scan_id=? AND last_error!='stopped_delivery_unknown' ORDER BY position",
                 (state["id"],),
             )
         }
@@ -101,10 +101,12 @@ def refresh(database, state):
         request["first_delivery_seconds"] = round(min(times) - start, 3)
         if counts["delivered"] >= request["quantity"]:
             request["target_delivery_seconds"] = round(max(times) - start, 3)
-    state["model_usage"] = scan._model_usage(state)
-    state["candidate_counts"] = dict(
-        Counter(c["status"] for c in state["candidates"].values())
-    )
+    if not state.get("stop_cleanup"):
+        state["model_usage"] = scan._model_usage(state)
+        state["candidate_count"] = len(state["candidates"])
+        state["candidate_counts"] = dict(
+            Counter(c["status"] for c in state["candidates"].values())
+        )
     return rows
 
 
@@ -116,6 +118,15 @@ def controls(database, state):
         ).fetchall()
     for job in jobs:
         command = json.loads(job["payload_json"])
+        if command["action"] == "continue" and scan.stop_requested(
+            database, state["id"]
+        ):
+            with transaction(database) as conn:
+                conn.execute(
+                    "UPDATE zhihu_jobs SET status='cancelled',last_error='scan_stopped',updated_at=? WHERE id=?",
+                    (scan._now(), job["id"]),
+                )
+            continue
         if command["action"] not in {"continue", "stop"}:
             with transaction(database) as conn:
                 conn.execute(
@@ -127,7 +138,11 @@ def controls(database, state):
             {**command, "job_id": job["id"], "at": job["created_at"]}
         )
         if command["action"] == "stop":
-            state.update(status="stopped", stop_reason="user_stop", stop_requested=True)
+            state.update(
+                status="stopped" if state.get("stop_cleanup") else "stopping",
+                stop_reason="user_stop",
+                stop_requested=True,
+            )
         elif state["status"] not in {"running"}:
             refresh(database, state)
             if state["request"]["qualified"] >= state["request"]["quantity"]:
@@ -155,10 +170,14 @@ def controls(database, state):
                         state["stream"]["results"].pop(key, None)
             zhihu_delivery.reset_failed(database, state["id"])
         with transaction(database) as conn:
-            if command["action"] != "stop" and state["status"] == "running":
-                conn.execute(
-                    "DELETE FROM zhihu_settings WHERE key=?",
-                    ("semantic_stop:" + state["id"],),
+            if conn.execute(
+                "SELECT 1 FROM zhihu_settings WHERE key=?",
+                ("semantic_stop:" + state["id"],),
+            ).fetchone():
+                state.update(
+                    status="stopped" if state.get("stop_cleanup") else "stopping",
+                    stop_reason="user_stop",
+                    stop_requested=True,
                 )
             conn.execute(
                 "UPDATE zhihu_jobs SET status='completed',updated_at=? WHERE id=?",
@@ -331,7 +350,7 @@ def export_report(state):
     from .zhihu_scan import _write
 
     report = {k: v for k, v in state.items() if k not in {"candidates"}}
-    report["candidate_count"] = len(state["candidates"])
+    report["candidate_count"] = state.get("candidate_count", len(state["candidates"]))
     report["stage_results"] = {
         key: {field: c.get(field) for field in ("status", "stages", "result")}
         for key, c in state["candidates"].items()
@@ -340,7 +359,7 @@ def export_report(state):
     request = state["request"]
     markdown = (
         f"# 知乎搜索进度\n\n状态：{state['status']}\n\n已送达 {request.get('qualified', 0)}/{request['quantity']}\n\n"
-        f"搜索页数：{state['metrics'].get('search_pages', 0)}；候选数：{len(state['candidates'])}\n\n"
+        f"搜索页数：{state['metrics'].get('search_pages', 0)}；候选数：{report['candidate_count']}\n\n"
         f"首条送达：{request.get('first_delivery_seconds', '暂无')} 秒；目标送达：{request.get('target_delivery_seconds', '暂无')} 秒\n"
     )
 
@@ -440,7 +459,7 @@ async def run(database, state, shutdown):
             if stopping or fatal or full:
                 if not running and collector is None:
                     if stopping:
-                        state.update(status="stopped", stop_reason="user_stop")
+                        state.update(status="stopping", stop_reason="user_stop")
                         break
                     if fatal:
                         break
@@ -477,7 +496,12 @@ async def run(database, state, shutdown):
                     waiting.remove(key)
             if not state["active"]:
                 schedule_collection(database, state, waiting)
-            if state["active"] and collector is None and time.monotonic() >= next_poll:
+            if (
+                state["active"]
+                and collector is None
+                and time.monotonic() >= next_poll
+                and not scan.stop_requested(database, state["id"])
+            ):
                 collector = asyncio.create_task(collect(copy.deepcopy(state["active"])))
             ready = []
             # An earlier incomplete body blocks later content evaluation.
@@ -567,12 +591,16 @@ async def run(database, state, shutdown):
 
 
 def step(database, state, shutdown=None):
+    from .zhihu_stop import finish_stop
+
     initialize(database, state)
     controls(database, state)
+    if scan.stop_requested(database, state["id"]):
+        finish_stop(database, state)
+        export_report(state)
+        return state
     if state["status"] not in {"running", "stopping"}:
         refresh(database, state)
-        if state["status"] == "stopped":
-            notify(database, state)
         scan._save(database, state)
         export_report(state)
         return state
@@ -626,6 +654,10 @@ def step(database, state, shutdown=None):
             last_error={"kind": kind, "message": str(exc)[:300]},
         )
         state["errors"].append({**state["last_error"], "at": scan._now()})
+    if scan.stop_requested(database, state["id"]):
+        finish_stop(database, state)
+        export_report(state)
+        return state
     refresh(database, state)
     scan._save(database, state)
     if not (shutdown and shutdown.is_set()) and state["status"] != "running":

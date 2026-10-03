@@ -319,7 +319,7 @@ def build_filtered_card(
                 "下一页", "filtered", offset=offset + FILTERED_PER_PAGE, **reference
             )
         )
-    navigation.append(_button("返回本轮状态", "scan_status", scan_id=scan_id))
+    navigation.append(_button("返回本轮状态", "scan_back", scan_id=scan_id))
     elements.append(_actions(*navigation))
     return _card(
         "知乎 · 当前轮次结果复核",
@@ -342,77 +342,7 @@ def _model_usage_text(usage: dict) -> str:
             + (f" · {_md_escape(settings)}" if settings else "")
             + f"\n调用 {metrics.get('calls', 0)} 次 · 累计请求耗时 {metrics.get('duration_seconds', 0):.1f} 秒"
         )
-        stages = metrics.get("stages", {})
-        lines.append(
-            f"内容评价 {stages.get('content', 0)} 次 · 搜索词提取 {stages.get('rewrite', 0)} 次"
-        )
-        usage_tokens = metrics.get("token_usage")
-        if usage_tokens is not None:
-            token_labels = {
-                "input_tokens": "输入",
-                "cached_input_tokens": "缓存输入",
-                "output_tokens": "输出",
-                "reasoning_output_tokens": "推理输出",
-                "total_tokens": "总计",
-            }
-            values = " · ".join(
-                f"{label} {usage_tokens[name]}"
-                for name, label in token_labels.items()
-                if usage_tokens.get(name) is not None
-            )
-            lines.append("token：" + (values or "未提供"))
-        else:
-            lines.append("token：未提供")
-        if metrics.get("usage_missing_calls"):
-            lines.append(
-                f"其中 {metrics['usage_missing_calls']} 次调用未提供 token 用量"
-            )
     return "\n".join(lines)
-
-
-def build_pending_card(
-    scan: dict, *, offset: int = 0, max_payload_bytes: int = 30 * 1024
-) -> dict:
-    """Show pending candidates in discovery order."""
-    pending = [
-        (key, value["article"])
-        for key, value in scan.get("candidates", {}).items()
-        if value.get("status") == "pending"
-    ]
-
-    elements = [
-        _markdown(
-            f"本轮保存了 {len(pending)} 篇未处理候选，按发现顺序排列，页内保留知乎搜索排名。"
-        )
-    ]
-    for key, article in pending[offset : offset + FILTERED_PER_PAGE]:
-        votes = article.get("voteup_count")
-        text = f"**{_md_escape(str(article.get('title') or key)[:180])}**\n赞同：{votes if type(votes) is int and votes >= 0 else '未知'} · 发布：{_md_escape(str(article.get('published_at') or '未知'))}"
-        if article.get("url"):
-            text += f"\n[查看知乎原文]({_link_url(article['url'])})"
-        elements.append(_markdown(text))
-    navigation = []
-    if offset:
-        navigation.append(
-            _button(
-                "上一页",
-                "scan_pending",
-                scan_id=scan["id"],
-                offset=max(0, offset - FILTERED_PER_PAGE),
-            )
-        )
-    if len(pending) > offset + FILTERED_PER_PAGE:
-        navigation.append(
-            _button(
-                "下一页",
-                "scan_pending",
-                scan_id=scan["id"],
-                offset=offset + FILTERED_PER_PAGE,
-            )
-        )
-    navigation.append(_button("返回本轮状态", "scan_status", scan_id=scan["id"]))
-    elements.append(_actions(*navigation))
-    return _card("知乎 · 未处理候选", elements, max_payload_bytes)
 
 
 def build_stream_card(scan: dict, *, max_payload_bytes: int = 30 * 1024) -> dict:
@@ -421,7 +351,7 @@ def build_stream_card(scan: dict, *, max_payload_bytes: int = 30 * 1024) -> dict
     labels = {
         "running": "正在查找",
         "waiting_user": "已达到目标，等待继续",
-        "stopped": "已停止",
+        "stopped": "已停止，未推送候选已清理",
         "stopping": "正在停止",
         "exhausted": "搜索结果已耗尽",
         "delivery_failed": "发送失败，等待重试",
@@ -437,7 +367,7 @@ def build_stream_card(scan: dict, *, max_payload_bytes: int = 30 * 1024) -> dict
             f"已送达 **{request.get('qualified', 0)}/{request.get('quantity') or 5}** · 待发送 {request.get('pending', 0)} · 发送失败 {request.get('failed', 0)}"
         ),
         _markdown(
-            f"已搜索 {scan.get('metrics', {}).get('search_pages', 0)} 页 · 发现 {len(scan.get('candidates', {}))} 篇\n"
+            f"已搜索 {scan.get('metrics', {}).get('search_pages', 0)} 页 · 发现 {scan.get('candidate_count', len(scan.get('candidates', {})))} 篇\n"
             f"待处理 {counts.get('pending', 0)} · 推荐 {counts.get('recommend', 0)} · 不确定 {counts.get('uncertain', 0)} · 不推荐 {counts.get('reject', 0)}\n"
             f"单篇失败 {sum(counts.get(k, 0) for k in ('body_failed', 'content_failed'))}"
         ),
@@ -449,30 +379,32 @@ def build_stream_card(scan: dict, *, max_payload_bytes: int = 30 * 1024) -> dict
         elements.append(
             _markdown("**模型开销**\n" + _model_usage_text(scan["model_usage"]))
         )
+    if cleanup := scan.get("stop_cleanup"):
+        text = f"已清理 {cleanup['discarded_count']} 篇未推送候选。需要更多内容时，请重新发起搜索。"
+        if cleanup["unknown_deliveries"]:
+            text += (
+                f"\n另有 {cleanup['unknown_deliveries']} 篇发送结果待确认，已停止重发。"
+            )
+        elements.append(_markdown(text))
     if scan["status"] == "exhausted":
         elements.append(
             _markdown(
                 "各搜索词的综合和最新分页均已结束，当前候选已处理完；单篇失败内容未自动重试。"
             )
         )
-    elements.extend(
-        [
+    if scan["status"] not in {"stopped", "stopping"}:
+        elements.append(
             _actions(
                 _button(
                     "继续查找", "scan_continue", style="primary", scan_id=scan["id"]
                 ),
                 _button("停止", "scan_stop", scan_id=scan["id"]),
-            ),
-            _actions(
-                _button("刷新状态", "scan_status", scan_id=scan["id"]),
-                _button("未处理候选", "scan_pending", scan_id=scan["id"]),
                 _button(
                     "不推荐及异常",
                     "filtered",
                     scan_id=scan["id"],
                     topic_id=scan["topic"]["id"],
                 ),
-            ),
-        ]
-    )
+            )
+        )
     return _card("Scout · 知乎搜索进度", elements, max_payload_bytes)
