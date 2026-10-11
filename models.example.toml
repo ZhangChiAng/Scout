@@ -1,9 +1,9 @@
 [model]
-model = "gpt-6.1-sol"
-# RSS、搜索词提取与偏好归纳使用 medium。
-reasoning_effort = "medium"
+model = "gpt-6-astra"
+# 所有模型调用统一使用 low；运行时统一启用 fast（priority）。
+reasoning_effort = "low"
 
 # 知乎根据话题与兴趣进行一次推送判断。
 [zhihu_content]
-model = "gpt-6.1-sol"
+model = "gpt-6-astra"
 reasoning_effort = "low"

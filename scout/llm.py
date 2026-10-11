@@ -184,7 +184,7 @@ def preference_request(
 @dataclass(frozen=True, slots=True)
 class ModelConfig:
     model: str
-    reasoning_effort: str = "medium"
+    reasoning_effort: str = "low"
 
 
 def load_required_model_config(
@@ -218,7 +218,7 @@ def load_models_config(
     if isinstance(model_raw, dict) and "base_url" in model_raw:
         raise ConfigError(
             f"{section}.base_url is no longer supported; use [model] with "
-            'model = "gpt-6.1-sol" and reasoning_effort = "medium", then run '
+            'model = "gpt-6-astra" and reasoning_effort = "low", then run '
             "uv run --locked python -m scout.auth login"
         )
     if (
@@ -228,7 +228,7 @@ def load_models_config(
     ):
         raise ConfigError(f"use [{section}] with model and optional reasoning_effort")
     effort = _nonempty_string(
-        model_raw.get("reasoning_effort", "medium"), f"{section}.reasoning_effort"
+        model_raw.get("reasoning_effort", "low"), f"{section}.reasoning_effort"
     )
     if effort not in REASONING_EFFORTS:
         raise ConfigError(
